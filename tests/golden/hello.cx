@@ -1,0 +1,18 @@
+namespace demo {
+
+    struct Counter {
+        int value;
+
+        ~Counter() {
+            reset(value);
+        }
+    };
+
+    int reset(int v) {
+        return v;
+    }
+
+    void run() {
+        Counter c;
+    }
+}

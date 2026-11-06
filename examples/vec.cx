@@ -1,0 +1,19 @@
+namespace math {
+
+    struct Vec {
+        int x;
+        int y;
+
+        ~Vec() {
+            clear(x);
+        }
+    };
+
+    int clear(int v) {
+        return v;
+    }
+
+    void origin() {
+        Vec v;
+    }
+}
