@@ -59,7 +59,10 @@ static void handle_query(const JsonValue *params, const JsonValue *id, int kind)
     cx_buf_init(&result);
     if (kind == 0) cx_lsp_document_symbols(&result, uri, text, len);
     else if (kind == 1) cx_lsp_definition(&result, uri, text, len, line, ch);
+    else if (kind == 3) cx_lsp_completion(&result, uri, text, len, line, ch);
     else cx_lsp_hover(&result, uri, text, len, line, ch);
+    fprintf(stderr, "cx lsp: query kind=%d uri=%s pos=%d:%d -> %s\n",
+            kind, uri, line, ch, result.data ? result.data : "null");
     respond_result(id, result.data ? result.data : "null");
     cx_buf_free(&result);
 }
@@ -74,6 +77,8 @@ static void handle_initialize(const JsonValue *id) {
                   "\"textDocumentSync\":1," /* 1 = full sync */
                   "\"documentSymbolProvider\":true,"
                   "\"definitionProvider\":true,"
+                  "\"declarationProvider\":true,"
+                  "\"completionProvider\":{\"triggerCharacters\":[\".\",\":\"]},"
                   "\"hoverProvider\":true"
                   "},\"serverInfo\":{\"name\":\"cx\",\"version\":\"%s\"}}}",
                   CX_VERSION);
@@ -175,8 +180,12 @@ int cx_lsp_run(void) {
             handle_query(params, id, 0);
         } else if (method && !strcmp(method, "textDocument/definition")) {
             handle_query(params, id, 1);
+        } else if (method && !strcmp(method, "textDocument/declaration")) {
+            handle_query(params, id, 1); /* treat declaration as definition */
         } else if (method && !strcmp(method, "textDocument/hover")) {
             handle_query(params, id, 2);
+        } else if (method && !strcmp(method, "textDocument/completion")) {
+            handle_query(params, id, 3);
         } else if (id) {
             /* Unknown request: answer with a null result so the client is not stuck. */
             respond_null(id);

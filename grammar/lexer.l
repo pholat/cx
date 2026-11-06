@@ -159,16 +159,18 @@ void cx_import(CxParseCtx *ctx, const char *raw) {
         path[m] = '\0';
     }
 
+    const char *base_file = ctx->filename ? ctx->filename : "";
+    int base_is_uri = strncmp(base_file, "file://", 7) == 0; /* LSP passes URIs */
+    const char *dir_file = base_is_uri ? base_file + 7 : base_file;
+
     char resolved[1024];
     if (path[0] == '/') {
         snprintf(resolved, sizeof resolved, "%s", path);
     } else {
-        const char *file = ctx->filename ? ctx->filename : "";
-        if (strncmp(file, "file://", 7) == 0) file += 7; /* LSP passes URIs */
-        const char *slash = strrchr(file, '/');
+        const char *slash = strrchr(dir_file, '/');
         if (slash)
             snprintf(resolved, sizeof resolved, "%.*s/%s",
-                     (int)(slash - file), file, path);
+                     (int)(slash - dir_file), dir_file, path);
         else
             snprintf(resolved, sizeof resolved, "%s", path);
     }
@@ -207,7 +209,9 @@ void cx_import(CxParseCtx *ctx, const char *raw) {
 
     if (imported) {
         imported->name = cx_arena_strdup(ctx->arena, path);
-        imported->file = cx_arena_strdup(ctx->arena, resolved);
+        imported->file = base_is_uri
+                             ? cx_arena_printf(ctx->arena, "file://%s", resolved)
+                             : cx_arena_strdup(ctx->arena, resolved);
         cx_vec_push(ctx->arena, &ctx->imports, imported);
     }
 }

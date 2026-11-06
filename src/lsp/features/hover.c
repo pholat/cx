@@ -14,9 +14,11 @@ int cx_lsp_hover(CxBuf *out, const char *uri, const char *text, size_t len,
     CxNode *tu = cx_parse(arena, text, len, uri, &diags);
     CxSymbolTable *sema = tu ? cx_sema_build(arena, tu, &diags) : NULL;
 
-    CxNode *node = tu ? cx_lsp_node_at(tu, line + 1, character + 1) : NULL;
+    char word[128];
     CxSymbol *sym =
-        (sema && node && node->name) ? cx_sema_find_symbol(sema, node->name) : NULL;
+        (sema && cx_lsp_word_at(text, line + 1, character + 1, word, sizeof word))
+            ? cx_sema_find_symbol(sema, word)
+            : NULL;
 
     if (!sym) {
         cx_buf_puts(out, "null");

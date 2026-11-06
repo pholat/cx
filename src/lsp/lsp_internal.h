@@ -38,5 +38,7 @@ int cx_lsp_definition(CxBuf *out, const char *uri, const char *text, size_t len,
                       int line, int character);
 int cx_lsp_hover(CxBuf *out, const char *uri, const char *text, size_t len,
                  int line, int character);
+int cx_lsp_completion(CxBuf *out, const char *uri, const char *text, size_t len,
+                      int line, int character);
 
 #endif /* CX_LSP_INTERNAL_H */

@@ -17,9 +17,14 @@ int cx_lsp_definition(CxBuf *out, const char *uri, const char *text, size_t len,
     CxNode *tu = cx_parse(arena, text, len, uri, &diags);
     CxSymbolTable *sema = tu ? cx_sema_build(arena, tu, &diags) : NULL;
 
-    CxNode *node = tu ? cx_lsp_node_at(tu, line + 1, character + 1) : NULL;
-    CxSymbol *sym =
-        (sema && node && node->name) ? cx_sema_find_symbol(sema, node->name) : NULL;
+    char word[128];
+    CxSymbol *sym = NULL;
+    if (sema && cx_lsp_word_at(text, line + 1, character + 1, word, sizeof word))
+        sym = cx_sema_find_symbol(sema, word);
+    if (!sym && sema && tu) {
+        CxNode *node = cx_lsp_node_at(tu, line + 1, character + 1);
+        if (node && node->name) sym = cx_sema_find_symbol(sema, node->name);
+    }
 
     if (sym && sym->decl) {
         /* The declaration may live in an imported file; report that file's URI. */

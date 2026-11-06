@@ -316,6 +316,7 @@ No tree-sitter parser is required.
 | `textDocument/documentSymbol` | ✅ namespaces, structs (+fields), functions, globals |
 | `textDocument/definition` | ✅ via the shared symbol table |
 | `textDocument/hover` | ✅ signature/type from the symbol table |
+| `textDocument/completion` | ✅ symbols + keywords (prefix-filtered) |
 
 Diagnostics reuse the transpiler's parser: on every open/change the server parses
 the buffer, converts each `CxDiagnostic` into an LSP `Diagnostic` (1-based

@@ -79,11 +79,17 @@ grammar, and uses `-MMD -MP` so editing `include/cx/*.h` triggers rebuilds.
 `cx lsp` speaks JSON-RPC 2.0 over stdio (Content-Length framing). Implemented:
 `initialize`/`initialized`/`shutdown`/`exit`; `textDocument/publishDiagnostics`
 on `didOpen`/`didChange`/`didClose` (full sync, `textDocumentSync: 1`); and
-`textDocument/documentSymbol`, `textDocument/definition`, `textDocument/hover`
-(each reparses the stored document through the shared parser + symbol table).
+`documentSymbol`, `definition`, `declaration`, `hover`, and `completion` (each
+reparses the stored document through the shared parser + symbol table).
 `definition` follows symbols into imported files (the URI comes from the
-symbol's source file). `positionEncoding` is not negotiated (columns are byte
-offsets).
+symbol's source file); `completion` offers symbol-table names (functions,
+structs, globals) plus keywords, filtered by the typed prefix.
+`positionEncoding` is not negotiated (columns are byte offsets).
+
+Completion caveats: plain **prefix** match (no fuzzy matching or auto-import);
+only symbol-table entries are offered — **locals/parameters aren't in the
+table**, so they don't appear; no snippet/trigger characters beyond `.`/`:`; and
+struct members aren't completed after a `.`/`->` yet.
 
 Neovim (this machine, 0.12): config lives in `~/.config/nvim/init.lua`
 (`vim.lsp.config`/`vim.lsp.enable`, prefers the dev build `~/workspace/cx/cx`),
@@ -259,6 +265,13 @@ Read this before changing the grammar/lexer.
 * **Multi-word types** come from `type TYPE_NAME` (concatenation), so any two
   type words combine (`int int` is accepted by the parser and left to the C
   compiler to reject).
+* **Keyword style**: Cx-introduced keywords are **lowercase full words** — no
+  abbreviations (`implements`, not `impl`; `function`, not `func`). C keywords
+  keep their C spelling (`return`, `struct`, `typedef`, `sizeof`, `const`, …),
+  since C compatibility is a goal. There is **no inheritance**; abstractions are
+  built from an explicit `implements Trait { … }` block inside a struct (static
+  traits; one pointer per trait to a static per-type table) — see
+  [`GENERICS.md`](./GENERICS.md) §4.
 * **Imports** (`import "mod.hx";`) are parsed with a nested `parse_source` that
   shares the same `CxParseCtx` (so the type set is shared) but saves/restores the
   per-parse fields (line/column/result/filename/prelude). Paths resolve relative
@@ -276,14 +289,65 @@ Read this before changing the grammar/lexer.
 
 ## 8. Roadmap (not yet implemented)
 
-Ordered roughly by value for wrapping C libraries (see
-`examples/klib/REQUIRED_FEATURES.md` for the full matrix):
+Ordered roughly by value (see `examples/klib/REQUIRED_FEATURES.md` for the full
+matrix):
 
-1. **Generics / macros** (or rely on the C preprocessor).
-2. klib wrappers: currently a hand-written bridge + int handles
-   (`examples/klib/`); direct Cx wrappers need item 1.
-3. A paired `.hx`/`.cx` model (the `.c` includes its header and skips duplicate
+1. **C interop / full C compliance** — `raw { … }` verbatim C passthrough +
+   `#include`, and C function-like macro *invocation* passthrough, so real C
+   (including klib's `KLIST_INIT` / `KHASH_MAP_INIT_INT`) can live inside Cx. See
+   [`MACRO_RULES.md`](./MACRO_RULES.md) §1.
+2. **Attributes `#[…]`** — metadata / codegen directives on structs, fields and
+   functions (`#[inline]`, `#[dtor]`, `#[cleanup(…)]`, `#[export]`). Cheap and
+   orthogonal to the generics decision. See [`GENERICS.md`](./GENERICS.md) §5.
+3. **`macro!`** — Rust-style token macros: item `macro_rules!` (generative, types
+   *and* functions) plus expression-position invocation. See
+   [`MACRO_RULES.md`](./MACRO_RULES.md) and [`GENERICS.md`](./GENERICS.md) §6.
+4. **Static traits** — an `implements Trait { … }` block **inside** a struct,
+   lowering to **one pointer per trait to a shared static per-type table**; macros
+   opt in with `requires trait Trait`. Static (no inheritance, no class vtables).
+   See [`GENERICS.md`](./GENERICS.md) §4.
+5. **klib-backed containers** — `List<T>` / `Map<K,V>` on klib, via macros or
+   (later) templates — see the design note below.
+6. A paired `.hx`/`.cx` model (the `.c` includes its header and skips duplicate
    declarations).
+
+### Generics & macros (design note — under discussion)
+
+> The type-abstraction direction is **not settled**. `macro_rules!` was chosen
+> partly because C++ templates are hard to read; that rationale is being
+> revisited in favour of a **traits + attributes + `macro!`** approach. See
+> [`GENERICS.md`](./GENERICS.md) (traits/attributes/`macro!`) and
+> [`MACRO_RULES.md`](./MACRO_RULES.md) (`macro_rules!`). These are different axes
+> (type parameters, behaviour interfaces, metadata, generativity) and need not
+> share one mechanism.
+
+The question: support `List<T>` / `Map<K,V>` by exposing klib's macros directly,
+or with a first-class Cx generics facility that *uses klib* as the backend?
+
+* **A. C-macro passthrough (klib directly).** Ship `raw { … }` and let users call
+  `KLIST_INIT` / `KHASH_MAP_INIT_INT`. Lowest effort, but `klist_t(name)` /
+  `khash_t(name)` *types* can't be written in Cx (a type is a single token), the
+  LSP can't see through macros, and errors are cryptic. Fine as an escape hatch,
+  weak as the container story.
+* **B. Template-like monomorphizing generics.** `struct List<T> { … }`,
+  `List<int> l;`; collect instantiations and emit `List__int` (tag mangling
+  already works this way). Type-safe, fully visible to the LSP, composes with
+  ctors/dtors/namespaces/`auto`. Cost: parse `<T>` / `List<T>`, substitute types,
+  collect instantiations.
+* **C. Rust-style `macro_rules!`-like hygienic macros.** A declarative macro
+  sub-language (patterns, repetition, hygiene) that can generate types *and*
+  functions. Most expressive, but a whole language to design, implement, and
+  surface to tooling.
+
+**Draft recommendation (see [`GENERICS.md`](./GENERICS.md) §8).** Treat the axes
+separately: adopt **attributes `#[…]`** early (metadata/codegen); add **`macro!`**
+(generativity) per [`MACRO_RULES.md`](./MACRO_RULES.md); introduce **explicit
+static traits** (`implements` block inside a struct, methods as function-pointer
+members) that macros `requires`; keep klib as the container backend. Option C (`macro_rules!`) is *a*
+mechanism, not the whole plan; option B (template-like generics) is deferred
+until tooling/type-error quality can be judged on real code. Exposing klib's
+macros directly (A) stays confined to the `raw { … }` / invocation-passthrough
+escape hatch — not the container API.
 
 ### Considered extensions (not committed)
 
@@ -356,6 +420,19 @@ Append a row per session with the headline changes.
   sharing the type set, declaration merge in sema, and `#include "mod.h"` in the
   output. `run.sh` now transpiles headers first and compiles with `-I$tmp`.
   `imports.cx` + `imported.hx` test.
+* **LSP completion**: `textDocument/completion` (symbol table + keywords,
+  prefix-filtered; `completionProvider` advertised). `features/completion.c`,
+  `cx_lsp_prefix_at`.
+* **Planning**: added [`MACRO_RULES.md`](./MACRO_RULES.md) (Rust-style
+  `macro_rules!` design) and linked it from the roadmap; set direction to
+  C-interop (`raw { … }` + macro-invocation passthrough) + `macro_rules!`, with
+  klib as the container backend.
+* **LSP robustness**: imports resolve from `file://` URIs (and store the target
+  as a URI); `definition`/`hover` resolve the **word under the cursor** (so type
+  references work); each symbol records its source file, so `definition` jumps
+  into imported files; `textDocument/declaration` is handled like `definition`
+  and `declarationProvider` is advertised. (Neovim side: `gd` was not bound to
+  LSP definition in the user config — added.)
 * Tests added: `nested.cx`, `ctor.cx`, `nested_struct.cx`, `control.cx`,
   `operators.cx`, `prelude.cx`, `pointers.cx`, `casts.cx`, `switch.cx`,
   `funcptr.cx`, `auto.cx`, `types.cx`, `multi.cx`, `header.hx`.
