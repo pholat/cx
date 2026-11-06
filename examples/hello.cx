@@ -1,10 +1,16 @@
-namespace demo {
+namespace demo::test {
 
     // Test counter
-    struct Counter {
+    struct counter {
         int value;
 
-        ~Counter() {
+	struct lol { int a; };
+
+	lol _lol;
+
+	counter(int val) {}
+
+        ~counter() {
             reset(value);
         }
     };

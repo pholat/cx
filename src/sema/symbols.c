@@ -37,6 +37,7 @@ static CxSymbol *symbol_new(CxArena *a, CxNode *n, const char *ns, CxNodeKind ki
     s->span = n->span;
     s->decl = n;
     s->dtor = NULL;
+    s->ctor = NULL;
     return s;
 }
 
@@ -61,11 +62,35 @@ static void walk(BuildCtx *c, CxNode *n, const char *ns) {
         for (int i = 0; i < n->children.len; i++) {
             CxNode *m = n->children.items[i];
             if (m->kind == CX_NODE_DESTRUCTOR) {
-                if (s->dtor)
+                if (m->name && n->name && strcmp(m->name, n->name) != 0) {
+                    /* A destructor must be named after its struct, otherwise the
+                     * generated `cleanup` helper would not belong to the type. */
+                    cx_error(c->diags, m->span,
+                             "destructor name '~%s' does not match struct '%s'",
+                             m->name, n->name);
+                } else if (s->dtor) {
                     cx_error(c->diags, m->span,
                              "duplicate destructor for struct '%s'", n->name);
-                else
+                } else {
                     s->dtor = m;
+                }
+            } else if (m->kind == CX_NODE_CONSTRUCTOR) {
+                if (m->name && n->name && strcmp(m->name, n->name) != 0) {
+                    /* C++-style: the constructor is the member named after the
+                     * struct, mirroring the destructor rule. */
+                    cx_error(c->diags, m->span,
+                             "constructor name '%s' does not match struct '%s'",
+                             m->name, n->name);
+                } else if (s->ctor) {
+                    cx_error(c->diags, m->span,
+                             "duplicate constructor for struct '%s'", n->name);
+                } else {
+                    s->ctor = m;
+                }
+            } else if (m->kind == CX_NODE_STRUCT) {
+                /* Nested type: its C tag is <Outer>__<Inner>, so qualify it
+                 * with the containing struct's name. */
+                walk(c, m, join_ns(c->arena, ns, n->name));
             } else if (m->kind == CX_NODE_VAR_DECL) {
                 symbol_new(c->arena, m, ns, CX_NODE_VAR_DECL); /* register */
             }
@@ -90,12 +115,32 @@ static void walk(BuildCtx *c, CxNode *n, const char *ns) {
     }
 }
 
+/* Second pass: a call whose callee names a struct is a constructor call, so the
+ * struct must actually declare a constructor. This also catches `T v(args);`
+ * written for a type that has no constructor. */
+static void check_calls(BuildCtx *c, CxNode *n) {
+    if (!n) return;
+    if (n->kind == CX_NODE_EXPR_CALL && n->name) {
+        CxSymbol *st = cx_sema_find_struct(c->table, n->name);
+        if (st && !st->ctor)
+            cx_error(c->diags, n->span,
+                     "no constructor defined for struct '%s'", st->name);
+    }
+    check_calls(c, n->lhs);
+    check_calls(c, n->rhs);
+    check_calls(c, n->init);
+    check_calls(c, n->body);
+    for (int i = 0; i < n->children.len; i++) check_calls(c, n->children.items[i]);
+    for (int i = 0; i < n->params.len; i++) check_calls(c, n->params.items[i]);
+}
+
 CxSymbolTable *cx_sema_build(CxArena *arena, CxNode *tu, CxDiagList *diags) {
     CxSymbolTable *table =
         (CxSymbolTable *)cx_arena_alloc(arena, sizeof(CxSymbolTable));
     if (!table) return NULL;
     BuildCtx c = {arena, table, diags};
     walk(&c, tu, NULL);
+    check_calls(&c, tu);
     return table;
 }
 

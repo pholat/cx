@@ -124,6 +124,7 @@ const char *cx_node_kind_name(CxNodeKind kind) {
     case CX_NODE_NAMESPACE:        return "namespace";
     case CX_NODE_STRUCT:           return "struct";
     case CX_NODE_DESTRUCTOR:       return "destructor";
+    case CX_NODE_CONSTRUCTOR:      return "constructor";
     case CX_NODE_FUNCTION:         return "function";
     case CX_NODE_PARAM:            return "param";
     case CX_NODE_VAR_DECL:         return "var_decl";

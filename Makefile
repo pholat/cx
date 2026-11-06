@@ -10,6 +10,7 @@ BUILD   := build
 CC      ?= cc
 CFLAGS  ?= -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter
 CPPFLAGS += -Iinclude -I$(BUILD)
+DEPFLAGS := -MMD -MP          # emit .d files so header edits trigger rebuilds
 FLEX    ?= flex
 BISON   ?= bison
 
@@ -27,7 +28,7 @@ cx: $(OBJ) $(GEN_OBJ)
 # Hand-written sources.
 $(BUILD)/%.o: src/%.c $(BUILD)/parser.h | $(BUILD)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(DEPFLAGS) -c $< -o $@
 
 # Bison: grammar -> parser.c + parser.h
 $(BUILD)/parser.c: grammar/parser.y | $(BUILD)
@@ -42,14 +43,18 @@ $(BUILD)/lexer.c: grammar/lexer.l $(BUILD)/parser.h | $(BUILD)
 
 $(BUILD)/parser.o: $(BUILD)/parser.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(DEPFLAGS) -c $< -o $@
 
 $(BUILD)/lexer.o: $(BUILD)/lexer.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(DEPFLAGS) -c $< -o $@
 
 $(BUILD):
 	mkdir -p $@
+
+# Auto-generated header dependencies (from -MMD -MP). Without these, editing
+# include/cx/*.h would not trigger a rebuild of the objects that use it.
+-include $(OBJ:.o=.d) $(GEN_OBJ:.o=.d)
 
 test: cx
 	sh tests/run.sh

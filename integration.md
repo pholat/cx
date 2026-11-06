@@ -288,8 +288,10 @@ vim.lsp.config("cx", {
 vim.lsp.enable("cx")
 ```
 
-Make sure `cx` is on `$PATH` (e.g. `make install`, or point `cmd` at an absolute
-path).
+Point `cmd` at the built binary (e.g. the absolute path to `./cx`, or a `cx` on
+`$PATH`). After rebuilding `cx`, a running server keeps the old binary in memory,
+so restart the client — `:LspRestart` (nvim-lspconfig) or reopen Neovim — to pick
+up the new build.
 
 ### Syntax highlighting
 

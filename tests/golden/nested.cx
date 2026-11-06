@@ -1,0 +1,19 @@
+namespace outer {
+    namespace inner::deep {
+        struct Thing {
+            int value;
+
+            ~Thing() {
+                clear(value);
+            }
+        };
+
+        int clear(int v) {
+            return v;
+        }
+
+        void run() {
+            Thing t;
+        }
+    }
+}

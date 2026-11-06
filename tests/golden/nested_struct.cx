@@ -1,0 +1,31 @@
+namespace demo {
+
+    struct Outer {
+        struct Inner {
+            int x;
+
+            ~Inner() {
+                reset(x);
+            }
+        };
+
+        Inner inner;
+        int y;
+
+        Outer(int v) {
+            inner.x = v;
+        }
+
+        ~Outer() {
+            reset(y);
+        }
+    };
+
+    int reset(int v) {
+        return v;
+    }
+
+    void run() {
+        Outer o(5);
+    }
+}

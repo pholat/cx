@@ -158,7 +158,9 @@ void io__open_file(struct io__File *f);
 ```
 
 * Separator: `__` (double underscore).
-* Nested namespaces join: `a::b::f` → `a__b__f`.
+* Nested namespaces join: `a::b::f` → `a__b__f`. A namespace can be declared
+  either by nesting (`namespace a { namespace b { … } }`) or directly with a
+  path (`namespace a::b { … }`).
 * Global scope stays unmangled.
 * Optional: emit a per-namespace enumerator/`typedef` block for ergonomics.
 
@@ -194,6 +196,70 @@ void use(void) {
   automatically — matching normal C++ RAII semantics.
 * Order: destructors run in reverse declaration order (guaranteed by C's
   `cleanup` on block exit).
+
+### 5.2b Constructors (C++-style)
+
+A constructor is a struct member named after the struct (mirroring the
+destructor rule, which the semantic pass enforces):
+
+```cxc
+struct File {
+    int fd;
+    File(int fd_) { fd = fd_; }   /* constructor */
+    ~File() { close(fd); }
+};
+```
+
+It lowers to a helper plus an explicit call, so declaration and construction are
+separate but always paired:
+
+```c
+void File__ctor(struct File *self, int fd_);
+...
+void File__ctor(struct File *self, int fd_) { self->fd = fd_; }
+
+void use(void) {
+    struct File f __attribute__((cleanup(File__dtor)));
+    File__ctor(&f, 3);
+}
+```
+
+Two declaration forms are accepted and both lower to the same code:
+
+```cxc
+File f(3);        /* direct construction */
+File f = File(3); /* initializer form */
+```
+
+Because constructors can be used before their definition, the emitter orders the
+output as: struct definitions -> function/constructor prototypes -> destructor
+and constructor helpers -> function bodies. This also makes struct-by-value
+returns (e.g. factory functions) valid, since the struct type is complete before
+any prototype that uses it.
+
+### 5.2c Nested structs
+
+A struct may declare nested types, which are mangled with the enclosing path
+(`demo::Outer` + `Inner` -> `demo__Outer__Inner`) and emitted before the struct
+that embeds them:
+
+```cxc
+struct Outer {
+    struct Inner {
+        int x;
+        ~Inner() { reset(x); }
+    };
+
+    Inner inner;   /* embedded by value: struct demo__Outer__Inner inner; */
+    int y;
+};
+```
+
+Nested types are referenced by their bare name (`Inner`), consistent with the
+current bare-name type resolution. Nested structs may themselves be nested, and
+their constructors/destructors are emitted like any other struct's. Note that
+embedding a destructible struct by value does **not** currently auto-construct or
+auto-destruct the field.
 
 ### 5.3 Headers (`.hx`)
 

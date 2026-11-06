@@ -47,13 +47,13 @@ void yyerror(YYLTYPE *locp, CxParseCtx *ctx, void *scanner, const char *msg);
 }
 
 %token <str> IDENT INT_LITERAL STRING_LITERAL
-%token NAMESPACE STRUCT RETURN
+%token NAMESPACE STRUCT RETURN SCOPE
 
 %type <node> translation_unit external_decl namespace_decl struct_decl
-%type <node> destructor_decl function_decl var_decl block stmt expr_stmt
-%type <node> expr param struct_member
-%type <str>  type
-%type <vec>  struct_members stmt_list param_list arg_list
+%type <node> destructor_decl constructor_decl function_decl var_decl block stmt
+%type <node> expr_stmt expr param struct_member
+%type <str>  type namespace_path
+%type <vec>  struct_members stmt_list param_list arg_list ctor_args
 
 %right '='
 %left  '+' '-'
@@ -78,8 +78,16 @@ external_decl:
     ;
 
 namespace_decl:
-      NAMESPACE IDENT '{' translation_unit '}'
+      NAMESPACE namespace_path '{' translation_unit '}'
         { $$ = MK(CX_NODE_NAMESPACE, (@$)); $$->name = $2; $$->children = $4->children; }
+    ;
+
+/* A namespace name is one or more identifiers joined by `::`, e.g. `aa::bb`. */
+namespace_path:
+      IDENT
+        { $$ = $1; }
+    | namespace_path SCOPE IDENT
+        { $$ = cx_arena_printf(ctx->arena, "%s::%s", $1, $3); }
     ;
 
 struct_decl:
@@ -97,11 +105,21 @@ struct_members:
 struct_member:
       var_decl
     | destructor_decl
+    | constructor_decl
+    | struct_decl          /* nested type: struct Inner { ... }; */
     ;
 
 destructor_decl:
       '~' IDENT '(' ')' block
         { $$ = MK(CX_NODE_DESTRUCTOR, (@$)); $$->name = $2; $$->body = $5; }
+    ;
+
+/* C++-style constructor: a member named after the struct. The semantic pass
+ * enforces that the name matches. */
+constructor_decl:
+      IDENT '(' param_list ')' block
+        { $$ = MK(CX_NODE_CONSTRUCTOR, (@$)); $$->name = $1;
+          $$->params = $3; $$->body = $5; }
     ;
 
 function_decl:
@@ -139,6 +157,10 @@ var_decl:
     | type IDENT '=' expr ';'
         { $$ = MK(CX_NODE_VAR_DECL, (@$)); $$->type = $1; $$->name = $2;
           $$->init = $4; }
+    | type IDENT '(' ctor_args ')' ';'
+        { $$ = MK(CX_NODE_VAR_DECL, (@$)); $$->type = $1; $$->name = $2;
+          CxNode *call = MK(CX_NODE_EXPR_CALL, (@$));
+          call->name = $1; call->children = $4; $$->init = call; }
     ;
 
 block:
@@ -204,6 +226,15 @@ arg_list:
         { $$ = $1; cx_vec_push(ctx->arena, &$$, $3); }
     | expr
         { $$ = cx_vec_empty(); cx_vec_push(ctx->arena, &$$, $1); }
+    ;
+
+/* Non-empty argument list, used by `Type var(args);` so it stays disjoint from
+ * a zero-argument function prototype `Type var();`. */
+ctor_args:
+      expr
+        { $$ = cx_vec_empty(); cx_vec_push(ctx->arena, &$$, $1); }
+    | ctor_args ',' expr
+        { $$ = $1; cx_vec_push(ctx->arena, &$$, $3); }
     ;
 
 %%

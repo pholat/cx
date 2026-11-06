@@ -16,6 +16,7 @@ typedef struct {
     CxSpan     span;
     CxNode    *decl;      /* originating AST node */
     CxNode    *dtor;      /* destructor body for structs, else NULL */
+    CxNode    *ctor;      /* constructor body for structs, else NULL */
 } CxSymbol;
 
 typedef struct {

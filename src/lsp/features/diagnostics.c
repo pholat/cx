@@ -21,7 +21,9 @@ int cx_lsp_diagnostics_notification(CxBuf *out, const char *uri,
     CxDiagList diags;
     cx_diaglist_init(&diags, uri);
 
-    cx_parse(arena, text, len, uri, &diags);
+    CxNode *tu = cx_parse(arena, text, len, uri, &diags);
+    if (tu && !cx_diaglist_has_errors(&diags))
+        cx_sema_build(arena, tu, &diags); /* semantic checks: destructor names, ... */
 
     cx_buf_puts(out,
                 "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\","

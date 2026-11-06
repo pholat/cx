@@ -57,6 +57,8 @@ IDENT   [A-Za-z_][A-Za-z0-9_]*
 \"(\\.|[^"\\])*\"           { yylval->str = cx_arena_strndup(yyget_extra(yyscanner)->arena, yytext, (size_t)yyleng); return STRING_LITERAL; }
 {IDENT}                     { yylval->str = cx_arena_strndup(yyget_extra(yyscanner)->arena, yytext, (size_t)yyleng); return IDENT; }
 
+"::"                        { return SCOPE; }
+":"                         { return ':'; }
 [-+*/=.;,~(){}]             { return (unsigned char)yytext[0]; }
 .                           { /* skip anything else */ }
 
