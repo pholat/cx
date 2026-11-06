@@ -41,14 +41,20 @@
 %option noinput nounput
 %option extra-type="CxParseCtx *"
 
-/* Start conditions for verbatim capture (the rules that switch into them are
- * annotated in the rules section): RAWCAP copies a balanced-brace body to
- * ctx->raw; MACROCAP copies a balanced-paren argument list to ctx->macro_args.
- * NB: these names must not collide with the Bison token names `RAW`/`MACRO`,
- * since Flex emits `#define RAWCAP 1` / `#define MACROCAP 2` which would
- * otherwise shadow `return RAW;` / `return MACRO;`. */
+/* Start conditions for capture. RAWCAP copies a balanced-brace body to
+ * ctx->raw; MACROCAP copies a balanced-paren argument list to ctx->macro_args;
+ * ATTR collects the body of a #[...] attribute into ctx->attr_body.
+ * NB: these names must not collide with the Bison token names, since Flex emits
+ * `#define RAWCAP 1` etc. which would otherwise shadow `return RAW;`.
+ *
+ * The rules section below deliberately has no standalone comments: Flex rejects
+ * multi-line comments there (it parses them as rules). The preprocessor-line
+ * rule excludes `#[` at line start so Cx attributes are not swallowed; an
+ * attribute is then collected by the ATTR condition and split into a name plus
+ * an optional verbatim argument string. */
 %x RAWCAP
 %x MACROCAP
+%x ATTR
 
 DIGIT   [0-9]
 IDENT   [A-Za-z_][A-Za-z0-9_]*
@@ -59,7 +65,29 @@ IDENT   [A-Za-z_][A-Za-z0-9_]*
 \n                  { /* newline (line/column advance in YY_USER_ACTION) */ }
 "//"[^\n]*          { /* line comment */ }
 "/*"([^*]|\*+[^*/])*\*+"/"  { /* block comment */ }
-^[ \t]*#[^\n]*      { CxParseCtx *c = yyget_extra(yyscanner); cx_buf_puts(&c->prelude, yytext); cx_buf_putc(&c->prelude, '\n'); }
+^[ \t]*"#"[^[\n][^\n]*  { CxParseCtx *c = yyget_extra(yyscanner); cx_buf_puts(&c->prelude, yytext); cx_buf_putc(&c->prelude, '\n'); }
+
+"#["                { CxParseCtx *c = yyget_extra(yyscanner); cx_buf_clear(&c->attr_body); BEGIN(ATTR); }
+<ATTR>"]"           {
+    CxParseCtx *c = yyget_extra(yyscanner);
+    const char *body = c->attr_body.data ? c->attr_body.data : "";
+    int blen = (int)c->attr_body.len;
+    int lp = -1;
+    for (int i = 0; i < blen; i++) if (body[i] == '(') { lp = i; break; }
+    if (lp >= 0) {
+        yylval->macro.name = cx_arena_strndup(c->arena, body, (size_t)lp);
+        yylval->macro.args = cx_arena_strndup(c->arena, body + lp + 1,
+                                              (size_t)(blen - lp - 2));
+    } else {
+        yylval->macro.name = cx_arena_strndup(c->arena, body, (size_t)blen);
+        yylval->macro.args = NULL;
+    }
+    BEGIN(INITIAL);
+    return ATTRIBUTE;
+}
+<ATTR>[^\n]         { cx_buf_putc(&yyget_extra(yyscanner)->attr_body, yytext[0]); }
+<ATTR>\n            { BEGIN(INITIAL); /* unterminated attribute */ }
+<ATTR><<EOF>>       { BEGIN(INITIAL); return 0; }
 
 "namespace"     { return NAMESPACE; }
 "struct"        { return STRUCT; }
@@ -296,6 +324,7 @@ CxNode *cx_parse(CxArena *arena, const char *src, size_t len,
     ctx.column = 1;
     cx_buf_init(&ctx.prelude);
     cx_buf_init(&ctx.raw);
+    cx_buf_init(&ctx.attr_body);
     cx_buf_init(&ctx.macro_args);
 
     static const char *builtin_types[] = {
@@ -315,6 +344,7 @@ CxNode *cx_parse(CxArena *arena, const char *src, size_t len,
     }
     cx_buf_free(&ctx.prelude);
     cx_buf_free(&ctx.raw);
+    cx_buf_free(&ctx.attr_body);
     cx_buf_free(&ctx.macro_args);
     cx_typeset_free(&ctx.types);
     free(ctx.active);

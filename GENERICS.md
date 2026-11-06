@@ -159,22 +159,27 @@ compatibility is a goal.
 
 ## 5. Sketch: attributes
 
+> **Implemented** (see `TECHNICAL.md` §4). Honoured: `#[inline]`, `#[noreturn]`,
+> `#[export("c_name")]`, `#[cleanup(fn)]`, `#[test]`; everything else passes
+> through as `__attribute__((…))`. Attributes are accepted before external
+> declarations and struct members (not statements). **`#[ctor]`/`#[dtor]` are
+> rejected** — ctor/dtor declaration keeps the Cx syntax.
+
 Attributes are the cheapest win here and orthogonal to generics. Candidates:
 
 ```cxc
 #[inline]                 fn f() { ... }
 #[export("c_name")]       fn g() { ... }        /* keep a plain C symbol name */
-#[dtor]                   fn close(...) { ... }  /* mark a destructor */
 #[cleanup(close)]         struct File { int fd; }
 #[repr(packed)]           struct Header { ... }
 #[deprecated]
 #[test]
 ```
 
-They can *replace* some current keyword-slots, e.g. `#[dtor]`/`#[ctor]` as an
-alternative to the "member named after the struct" rule — but note the existing
-`~Type()` rule is already readable, so attributes are complementary, not a
-replacement.
+Constructor/destructor declaration deliberately stays on the Cx syntax
+(`Type(args) { … }` / `~Type() { … }`). `#[ctor]`/`#[dtor]` were considered as
+attribute forms and **rejected**: the existing rules are already readable, and
+writing `#[ctor]`/`#[dtor]` now raises an error pointing at the Cx syntax.
 
 Implementation is largely mechanical: attach a list of `(name, args)` to the AST
 node; the emitter/back-end honours the ones it knows and passes others through as

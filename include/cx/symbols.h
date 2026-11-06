@@ -18,6 +18,8 @@ typedef struct {
     CxNode    *decl;      /* originating AST node */
     CxNode    *dtor;      /* destructor body for structs, else NULL */
     CxNode    *ctor;      /* constructor body for structs, else NULL */
+    char      *export_name; /* `#[export("c_name")]` unmangled C name, or NULL */
+    char      *cleanup_fn;  /* `#[cleanup(fn)]` RAII cleanup fn for a struct */
 } CxSymbol;
 
 typedef struct {

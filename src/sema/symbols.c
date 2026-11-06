@@ -40,6 +40,26 @@ static CxSymbol *symbol_new(CxArena *a, CxNode *n, const char *ns,
     s->decl = n;
     s->dtor = NULL;
     s->ctor = NULL;
+    s->export_name = NULL;
+    s->cleanup_fn = NULL;
+    return s;
+}
+
+/* The first attribute named `name` on `n`, or NULL. */
+static CxNode *find_attr(const CxNode *n, const char *name) {
+    if (!n || !name) return NULL;
+    for (int i = 0; i < n->attrs.len; i++)
+        if (n->attrs.items[i]->name && !strcmp(n->attrs.items[i]->name, name))
+            return n->attrs.items[i];
+    return NULL;
+}
+
+/* Strip the surrounding quotes from a string-literal attribute argument. */
+static char *unquote(CxArena *a, char *s) {
+    if (!s) return NULL;
+    size_t n = strlen(s);
+    if (n >= 2 && s[0] == '"' && s[n - 1] == '"')
+        return cx_arena_strndup(a, s + 1, n - 2);
     return s;
 }
 
@@ -61,6 +81,8 @@ static void walk(BuildCtx *c, CxNode *n, const char *ns, const char *file) {
         CxSymbol *s = symbol_new(c->arena, n, ns, CX_NODE_STRUCT, file);
         if (!s) return;
         table_push(c->table, s);
+        CxNode *cl = find_attr(n, "cleanup"); /* `#[cleanup(fn)]`: RAII fn */
+        if (cl && cl->type) s->cleanup_fn = cl->type;
         for (int i = 0; i < n->children.len; i++) {
             CxNode *m = n->children.items[i];
             if (m->kind == CX_NODE_DESTRUCTOR) {
@@ -104,6 +126,8 @@ static void walk(BuildCtx *c, CxNode *n, const char *ns, const char *file) {
     case CX_NODE_FUNCTION: {
         CxSymbol *s = symbol_new(c->arena, n, ns, CX_NODE_FUNCTION, file);
         table_push(c->table, s);
+        CxNode *exp = find_attr(n, "export"); /* `#[export("c_name")]` */
+        if (exp && exp->type) s->export_name = unquote(c->arena, exp->type);
         break;
     }
 
@@ -227,6 +251,36 @@ static void check_implements(BuildCtx *c, CxNode *n) {
         check_implements(c, n->params.items[i]);
 }
 
+/* Reject attributes for constructor/destructor declaration: Cx keeps its fixed
+ * `Type(args) { … }` / `~Type() { … }` syntax for those. */
+static void check_attrs(BuildCtx *c, CxNode *n) {
+    if (!n) return;
+    for (int i = 0; i < n->attrs.len; i++) {
+        CxNode *a = n->attrs.items[i];
+        if (!a->name) continue;
+        if (!strcmp(a->name, "ctor"))
+            cx_error(c->diags, a->span,
+                     "`#[ctor]` is not supported; declare a constructor as "
+                     "`Type(args) { … }`");
+        else if (!strcmp(a->name, "dtor"))
+            cx_error(c->diags, a->span,
+                     "`#[dtor]` is not supported; declare a destructor as "
+                     "`~Type() { … }`");
+    }
+    check_attrs(c, n->lhs);
+    check_attrs(c, n->rhs);
+    check_attrs(c, n->init);
+    check_attrs(c, n->body);
+    check_attrs(c, n->cond);
+    check_attrs(c, n->then);
+    check_attrs(c, n->els);
+    check_attrs(c, n->incr);
+    for (int i = 0; i < n->children.len; i++)
+        check_attrs(c, n->children.items[i]);
+    for (int i = 0; i < n->params.len; i++)
+        check_attrs(c, n->params.items[i]);
+}
+
 /* Infer the type of an initializer for `auto`. */
 static const char *infer_type(BuildCtx *c, CxNode *init) {
     if (!init) return NULL;
@@ -285,6 +339,7 @@ CxSymbolTable *cx_sema_build(CxArena *arena, CxNode *tu, CxDiagList *diags) {
     infer_auto(&c, tu);
     check_calls(&c, tu);
     check_implements(&c, tu);
+    check_attrs(&c, tu);
     return table;
 }
 
@@ -342,7 +397,7 @@ CxSymbol *cx_sema_dtor_for(const CxSymbolTable *t, const char *type) {
     char base[128];
     type_base(type, base, sizeof base);
     CxSymbol *s = cx_sema_find_struct(t, base);
-    if (s && s->dtor) return s;
+    if (s && (s->dtor || s->cleanup_fn)) return s;
     return NULL;
 }
 

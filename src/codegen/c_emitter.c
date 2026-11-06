@@ -115,6 +115,59 @@ static void emit_macro_call(Emit *e, CxNode *n) {
     cx_buf_putc(e->out, ')');
 }
 
+/* ------------------------------------------------------------- attributes */
+
+/* Attributes emitted as leading specifiers, before the return type. */
+static int attr_is_leading(const char *name) {
+    return name && (!strcmp(name, "inline") || !strcmp(name, "noreturn"));
+}
+
+/* Attributes consumed by the front-end (never emitted as-is). `ctor`/`dtor` are
+ * rejected by sema but listed here too so they are never emitted as C attrs. */
+static int attr_is_semantic(const char *name) {
+    return name && (!strcmp(name, "export") || !strcmp(name, "cleanup") ||
+                    !strcmp(name, "test") || !strcmp(name, "ctor") ||
+                    !strcmp(name, "dtor"));
+}
+
+static void emit_attr_leading(Emit *e, CxNode *n) {
+    if (!n) return;
+    for (int i = 0; i < n->attrs.len; i++) {
+        const char *a = n->attrs.items[i]->name;
+        if (!a) continue;
+        if (!strcmp(a, "inline")) cx_buf_puts(e->out, "inline ");
+        else if (!strcmp(a, "noreturn")) cx_buf_puts(e->out, "_Noreturn ");
+    }
+}
+
+/* Emit `__attribute__((…))` for every trailing attribute (unknown names pass
+ * through as raw C attributes). `#[repr(packed)]` folds to `packed`. */
+static void emit_attr_trailing(Emit *e, CxNode *n) {
+    if (!n) return;
+    for (int i = 0; i < n->attrs.len; i++) {
+        CxNode *a = n->attrs.items[i];
+        if (!a->name || attr_is_leading(a->name) || attr_is_semantic(a->name))
+            continue;
+        if (!strcmp(a->name, "repr") && a->type && !strcmp(a->type, "packed"))
+            cx_buf_puts(e->out, " __attribute__((packed))");
+        else if (a->type)
+            cx_buf_printf(e->out, " __attribute__((%s(%s)))", a->name, a->type);
+        else
+            cx_buf_printf(e->out, " __attribute__((%s))", a->name);
+    }
+}
+
+/* The emitted C name for a function: its `#[export("…")]` name if any, else the
+ * namespace-mangled name. */
+static const char *fn_c_name(Emit *e, const char *ns, const char *name) {
+    CxSymbol *fn = cx_sema_find_function(e->sema, name);
+    if (fn) {
+        if (fn->export_name) return fn->export_name;
+        return cx_mangle(e->arena, fn->ns, fn->name);
+    }
+    return cx_mangle(e->arena, ns, name);
+}
+
 static int struct_has_field(const CxNode *s, const char *name) {
     if (!s || !name) return 0;
     for (int i = 0; i < s->children.len; i++) {
@@ -139,9 +192,11 @@ static void emit_expr(Emit *e, CxNode *n) {
             cx_buf_printf(e->out, "self->%s", n->name);
         } else {
             /* A bare identifier that names a function is a function pointer
-             * (e.g. passing a callback); emit its mangled name. */
+             * (e.g. passing a callback); emit its mangled/exported name. */
             CxSymbol *fn = cx_sema_find_function(e->sema, n->name);
-            if (fn) cx_buf_puts(e->out, cx_mangle(e->arena, fn->ns, fn->name));
+            if (fn) cx_buf_puts(e->out, fn->export_name
+                                            ? fn->export_name
+                                            : cx_mangle(e->arena, fn->ns, fn->name));
             else cx_buf_puts(e->out, n->name);
         }
         break;
@@ -205,7 +260,9 @@ static void emit_expr(Emit *e, CxNode *n) {
     case CX_NODE_EXPR_CALL: {
         CxSymbol *fn = cx_sema_find_function(e->sema, n->name);
         if (fn)
-            cx_buf_puts(e->out, cx_mangle(e->arena, fn->ns, fn->name));
+            cx_buf_puts(e->out, fn->export_name
+                                    ? fn->export_name
+                                    : cx_mangle(e->arena, fn->ns, fn->name));
         else
             cx_buf_puts(e->out, n->name);
         cx_buf_putc(e->out, '(');
@@ -432,6 +489,7 @@ static void emit_var_decl(Emit *e, CxNode *n, int is_local) {
             char *dtor = cx_raii_dtor_name(e->arena, e->sema, n->type);
             if (dtor) cx_buf_printf(e->out, " __attribute__((cleanup(%s)))", dtor);
         }
+        emit_attr_trailing(e, n); /* `#[aligned(8)] int x;` etc. */
 
         if (d->init && !ctor) {
             cx_buf_puts(e->out, " = ");
@@ -603,9 +661,10 @@ static void emit_branch(Emit *e, CxNode *n) {
 
 static void emit_function_proto(Emit *e, CxNode *n, const char *ns) {
     ind(e);
+    emit_attr_leading(e, n); /* `#[inline]`, `#[noreturn]` */
     emit_type(e, n->type);
     cx_buf_putc(e->out, ' ');
-    cx_buf_puts(e->out, cx_mangle(e->arena, ns, n->name));
+    cx_buf_puts(e->out, fn_c_name(e, ns, n->name));
     cx_buf_putc(e->out, '(');
     if (n->params.len == 0) {
         cx_buf_puts(e->out, "void");
@@ -616,6 +675,7 @@ static void emit_function_proto(Emit *e, CxNode *n, const char *ns) {
         }
     }
     cx_buf_putc(e->out, ')');
+    emit_attr_trailing(e, n);
 }
 
 static void emit_struct_def(Emit *e, CxNode *n, const char *ns) {
@@ -633,6 +693,7 @@ static void emit_struct_def(Emit *e, CxNode *n, const char *ns) {
         for (int k = 0; k < m->children.len; k++) {
             ind(e);
             emit_declarator(e, m->type, m->children.items[k]);
+            emit_attr_trailing(e, m);
             cx_buf_puts(e->out, ";\n");
         }
     }
@@ -648,7 +709,9 @@ static void emit_struct_def(Emit *e, CxNode *n, const char *ns) {
     }
     e->indent--;
     ind(e);
-    cx_buf_puts(e->out, "};\n");
+    cx_buf_puts(e->out, "}");
+    emit_attr_trailing(e, n); /* `#[packed] struct T { … }` */
+    cx_buf_puts(e->out, ";\n");
 }
 
 /* Emit `T__ctor(&self->field);` for each embedded field whose struct type
@@ -768,7 +831,7 @@ static const char *child_ns(Emit *e, const char *ns, CxNode *child) {
 /* Emit a struct and (recursively) any nested struct declarations. Phase 1 emits
  * nested types first so the embedding struct sees a complete type. */
 static void emit_struct_pass(Emit *e, CxNode *s, const char *ns, int phase) {
-    char *inner_ns = child_ns(e, ns, s);
+    const char *inner_ns = child_ns(e, ns, s);
 
     if (phase == 1) {
         for (int i = 0; i < s->children.len; i++) {

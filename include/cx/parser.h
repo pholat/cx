@@ -37,6 +37,7 @@ typedef struct CxParseCtx {
     int         raw_depth; /* open-brace depth while capturing a raw block */
     int         raw_line;  /* start of the current raw block (for its span) */
     int         raw_col;
+    CxBuf       attr_body; /* in-progress `#[…]` attribute body capture */
     CxBuf       macro_args;/* in-progress `name!( … )` argument capture */
     char       *macro_name;/* identifier of the current macro invocation */
     int         macro_depth;/* open-paren depth while capturing macro args */

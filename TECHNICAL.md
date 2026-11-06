@@ -189,6 +189,24 @@ verbatim at the top of the generated C.
 * There is no postfix-call syntax yet, so reaching the table uses a
   function-pointer local: `int (*len)(void *) = r.T; len(&r);`.
 
+### Attributes
+
+`#[name]` / `#[name(args)]` may precede an external declaration or a struct
+member (stacked as needed, one per `#[…]`); the argument text is captured
+verbatim.
+
+* **Honoured**: `#[inline]` / `#[noreturn]` → leading C specifiers
+  (`inline` / `_Noreturn`); `#[export("c_name")]` → the function is emitted *and
+  called* under the plain C name (no namespace mangling); `#[cleanup(fn)]` on a
+  struct → locals of that type get `__attribute__((cleanup(fn)))` (RAII without
+  a `~Type()`); `#[test]` → ignored in C output.
+* **Passed through** as `__attribute__((…))`: `#[packed]` / `#[repr(packed)]`,
+  `#[aligned(n)]`, `#[deprecated]`, `#[unused]`, `#[warn_unused_result]`,
+  `#[naked]`, `#[section(…)]`, and any other name (unknown names become a raw C
+  attribute `__attribute__((name))`).
+* **Rejected**: `#[ctor]` / `#[dtor]` are an error — constructor/destructor
+  declaration keeps the Cx syntax (`Type(args) { … }` / `~Type() { … }`).
+
 ### Headers and imports
 `cx build foo.hx -o foo.h` emits a **declaration-only** header: an include guard,
 typedefs, struct definitions, and prototypes (functions, constructors,
@@ -254,6 +272,10 @@ Details:
 * In an `implements` method body the receiver is a local
   `struct T *self = self_; (void)self;`, so `self->field` and bare field names
   both resolve.
+* Attributes are emitted by `emit_attr_leading` (before the return type) and
+  `emit_attr_trailing` (after the declarator / struct body). `#[export]` and
+  `#[cleanup]` are resolved through the symbol table (`export_name`,
+  `cleanup_fn`) rather than emitted.
 * File-scope constructor calls are not supported (emitted as a comment).
 
 ---
@@ -342,6 +364,13 @@ Read this before changing the grammar/lexer.
   function-pointer local. The table pointer is installed by the ctor or by a
   statement emitted after a default declaration `T v;` (and by a designated
   initializer for globals); a `malloc`'d struct is the user's responsibility.
+* **Attributes** (`#[…]`) are captured by a Flex `ATTR` start condition; the
+  preprocessor-line rule excludes `#[` so attributes are not swallowed. Leading
+  (`inline`/`noreturn`) become specifiers; anything else becomes
+  `__attribute__((…))` (unknown names pass through verbatim). `export`, `cleanup`
+  and `test` are front-end only (never emitted as attributes); `ctor`/`dtor` are
+  rejected with an error. Attributes are accepted before external declarations
+  and struct members, not statements.
 * Bison blocks are written for **GNU Bison 3.8**; the parser is pure/reentrant
   and the scanner is `reentrant bison-bridge bison-locations`.
 * In the Neovim syntax file, `~` must be escaped (`\~`) — `~` is the
@@ -353,19 +382,17 @@ Read this before changing the grammar/lexer.
 
 Ordered roughly by value (see `examples/klib/REQUIRED_FEATURES.md` for the full
 matrix). Done: **C interop** (`raw { … }` + `#include` + `NAME!(…)` macro
-invocation passthrough) and **static traits** (`trait`/`implements`).
+invocation passthrough), **static traits** (`trait`/`implements`), and
+**attributes** (`#[…]`).
 
-1. **Attributes `#[…]`** — metadata / codegen directives on structs, fields and
-   functions (`#[inline]`, `#[dtor]`, `#[cleanup(…)]`, `#[export]`). Cheap and
-   orthogonal to the generics decision. See [`GENERICS.md`](./GENERICS.md) §5.
-2. **`macro!`** — Rust-style token macros: item `macro_rules!` (generative, types
+1. **`macro!`** — Rust-style token macros: item `macro_rules!` (generative, types
    *and* functions) plus expression-position invocation (which would also give a
    postfix-call syntax for trait tables). See
    [`MACRO_RULES.md`](./MACRO_RULES.md) and [`GENERICS.md`](./GENERICS.md) §6.
-3. **klib-backed containers** — `List<T>` / `Map<K,V>` on klib, via macros or
+2. **klib-backed containers** — `List<T>` / `Map<K,V>` on klib, via macros or
    (later) templates — see the design note below. With `raw`/macro passthrough
    and static traits in place, a `macro_rules!` container layer is the next step.
-4. A paired `.hx`/`.cx` model (the `.c` includes its header and skips duplicate
+3. A paired `.hx`/`.cx` model (the `.c` includes its header and skips duplicate
    declarations).
 
 ### Generics & macros (design note — under discussion)
@@ -519,6 +546,28 @@ Append a row per session with the headline changes.
 * Not yet: expression-position macro invocation / a postfix call syntax (needed
   to call through a trait table without a function-pointer local); attributes
   `#[…]`; `macro_rules!`/`macro!`.
+
+### Session 2026-11-06 (attributes)
+
+* **Attributes `#[name]` / `#[name(args)]`** before external declarations and
+  struct members. Honoured: `#[inline]`/`#[noreturn]` (leading specifiers);
+  `#[export("c_name")]` (emitted *and* called under the plain C name, no
+  mangling); `#[cleanup(fn)]` on a struct (locals get
+  `__attribute__((cleanup(fn)))` — RAII without `~Type()`); `#[test]` (Cx-only).
+  Everything else passes through as `__attribute__((…))` (`#[packed]`,
+  `#[repr(packed)]`, `#[aligned(n)]`, `#[deprecated]`, `#[unused]`, …); unknown
+  names become `__attribute__((name))`.
+* Lexer: new `ATTR` start condition captures the attribute body; the
+  preprocessor-line rule now excludes `#[` so attributes aren't swallowed.
+* AST: `CX_NODE_ATTR` + a `CxVec attrs` on `CxNode`. Sema records `export_name`
+  and `cleanup_fn` on symbols, and `cx_raii_dtor_name` prefers `#[cleanup]`.
+  Emitter gained `emit_attr_leading`/`emit_attr_trailing` and `fn_c_name`; LSP
+  hover shows the attributes. `cx dump` prints them.
+* Tests: `attributes.cx`. Also fixed a pre-existing `-Wdiscarded-qualifiers`
+  warning in `emit_struct_pass`.
+* `#[ctor]` / `#[dtor]` raise an error — ctor/dtor declaration keeps `Type(args)`
+  / `~Type()`.
+* Not yet: attributes on statements.
 
 ---
 

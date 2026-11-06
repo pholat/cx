@@ -25,6 +25,16 @@ int cx_lsp_hover(CxBuf *out, const char *uri, const char *text, size_t len,
     } else {
         CxBuf md;
         cx_buf_init(&md);
+        /* Lead with any `#[…]` attributes on the declaration. */
+        if (sym->decl && sym->decl->attrs.len > 0) {
+            for (int i = 0; i < sym->decl->attrs.len; i++) {
+                CxNode *a = sym->decl->attrs.items[i];
+                cx_buf_printf(&md, "`#[%s%s%s%s]` ", a->name ? a->name : "",
+                              a->type ? "(" : "", a->type ? a->type : "",
+                              a->type ? ")" : "");
+            }
+            cx_buf_puts(&md, "\n\n");
+        }
         if (sym->kind == CX_NODE_FUNCTION) {
             cx_buf_printf(&md, "%s %s(", sym->type ? sym->type : "void", sym->name);
             const CxNode *decl = sym->decl;

@@ -163,6 +163,7 @@ const char *cx_node_kind_name(CxNodeKind kind) {
     case CX_NODE_TRAIT_METHOD:     return "trait_method";
     case CX_NODE_IMPLEMENTS:       return "implements";
     case CX_NODE_IMPL_METHOD:      return "impl_method";
+    case CX_NODE_ATTR:             return "attr";
     case CX_NODE_ERROR:            return "error";
     }
     return "?";
@@ -181,6 +182,11 @@ void cx_node_dump(const CxNode *n, FILE *out, int depth) {
     fprintf(out, " [%d:%d-%d:%d]\n", n->span.first_line, n->span.first_column,
             n->span.last_line, n->span.last_column);
 
+    for (int i = 0; i < n->attrs.len; i++) {
+        dump_indent(out, depth + 1);
+        fputs("attr:\n", out);
+        cx_node_dump(n->attrs.items[i], out, depth + 2);
+    }
     for (int i = 0; i < n->params.len; i++) {
         dump_indent(out, depth + 1);
         fputs("param:\n", out);

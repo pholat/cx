@@ -63,6 +63,7 @@ typedef enum {
     CX_NODE_TRAIT_METHOD, /* required method signature (type/name/params) */
     CX_NODE_IMPLEMENTS,   /* `implements T { … }` inside a struct */
     CX_NODE_IMPL_METHOD,  /* method body provided by an implements block */
+    CX_NODE_ATTR,         /* `#[name(args)]`: name=attr, type=verbatim args */
     CX_NODE_ERROR
 } CxNodeKind;
 
@@ -98,6 +99,7 @@ struct CxNode {
     CxVec children; /* TU + namespace decls, struct members, block stmts, call args */
     CxVec params;   /* function parameters */
     CxVec imports;  /* translation unit: imported module roots */
+    CxVec attrs;    /* `#[…]` attributes (CX_NODE_ATTR items) on this item */
 };
 
 /* ----------------------------------------------------------------- helpers */

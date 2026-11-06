@@ -50,6 +50,7 @@ void yyerror(YYLTYPE *locp, CxParseCtx *ctx, void *scanner, const char *msg);
 %token <str> IDENT INT_LITERAL STRING_LITERAL TYPE_NAME
 %token <str> RAW
 %token <macro> MACRO
+%token <macro> ATTRIBUTE
 %token NAMESPACE STRUCT RETURN SCOPE ARROW
 %token IF ELSE WHILE FOR BREAK CONTINUE SIZEOF SWITCH CASE DEFAULT GOTO AUTO
 %token TYPEDEF IMPORT TRAIT IMPLEMENTS SELF
@@ -65,7 +66,7 @@ void yyerror(YYLTYPE *locp, CxParseCtx *ctx, void *scanner, const char *msg);
 %type <str>  type namespace_path
 %type <vec>  struct_members stmt_list param_list arg_list ctor_args fp_param_list
 %type <vec>  one_decl_list trait_members trait_param_list impl_members
-%type <vec>  impl_param_list
+%type <vec>  impl_param_list attributes
 
 %right '=' PLUSEQ MINUSEQ STAREQ SLASHEQ PERCENTEQ
 %left  OROR
@@ -96,6 +97,22 @@ translation_unit:
         { $$ = MK(CX_NODE_TRANSLATION_UNIT, (@$)); ctx->result = $$; }
     | translation_unit external_decl
         { $$ = $1; cx_vec_push(ctx->arena, &$$->children, $2); ctx->result = $$; }
+    | translation_unit attributes external_decl
+        { $$ = $1; $3->attrs = $2; cx_vec_push(ctx->arena, &$$->children, $3);
+          ctx->result = $$; }
+    ;
+
+/* One or more `#[…]` attributes preceding a declaration. Each becomes a
+ * CX_NODE_ATTR with the attribute name and its (verbatim) argument text. */
+attributes:
+      ATTRIBUTE
+        { $$ = cx_vec_empty();
+          CxNode *a = MK(CX_NODE_ATTR, (@$)); a->name = $1.name; a->type = $1.args;
+          cx_vec_push(ctx->arena, &$$, a); }
+    | attributes ATTRIBUTE
+        { $$ = $1;
+          CxNode *a = MK(CX_NODE_ATTR, (@$)); a->name = $2.name; a->type = $2.args;
+          cx_vec_push(ctx->arena, &$$, a); }
     ;
 
 external_decl:
@@ -243,6 +260,8 @@ struct_members:
         { $$ = cx_vec_empty(); }
     | struct_members struct_member
         { $$ = $1; cx_vec_push(ctx->arena, &$$, $2); }
+    | struct_members attributes struct_member
+        { $$ = $1; $3->attrs = $2; cx_vec_push(ctx->arena, &$$, $3); }
     ;
 
 struct_member:
