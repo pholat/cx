@@ -46,7 +46,13 @@ static void usage(void) {
     fprintf(stderr, "  cx --version\n");
 }
 
+static int has_ext(const char *path, const char *ext) {
+    size_t n = strlen(path), m = strlen(ext);
+    return n >= m && strcmp(path + n - m, ext) == 0;
+}
+
 static int run_transpile(const char *in, const char *out, int dump) {
+    int header = has_ext(in, ".hx");
     size_t len = 0;
     char *src = read_all(in, &len);
     if (!src) {
@@ -72,7 +78,8 @@ static int run_transpile(const char *in, const char *out, int dump) {
         } else {
             CxBuf buf;
             cx_buf_init(&buf);
-            cx_emit_c(arena, &buf, tu, sema, in);
+            if (header) cx_emit_h(arena, &buf, tu, sema, in);
+            else cx_emit_c(arena, &buf, tu, sema, in);
             if (out) {
                 if (write_all(out, buf.data, buf.len) != 0) {
                     fprintf(stderr, "cx: cannot write '%s'\n", out);

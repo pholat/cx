@@ -46,20 +46,42 @@ void yyerror(YYLTYPE *locp, CxParseCtx *ctx, void *scanner, const char *msg);
     CxVec   vec;
 }
 
-%token <str> IDENT INT_LITERAL STRING_LITERAL
-%token NAMESPACE STRUCT RETURN SCOPE
+%token <str> IDENT INT_LITERAL STRING_LITERAL TYPE_NAME
+%token NAMESPACE STRUCT RETURN SCOPE ARROW
+%token IF ELSE WHILE FOR BREAK CONTINUE SIZEOF SWITCH CASE DEFAULT GOTO AUTO
+%token TYPEDEF IMPORT
+%token EQ NE LE GE ANDAND OROR
+%token INC DEC PLUSEQ MINUSEQ STAREQ SLASHEQ PERCENTEQ SHL SHR
 
 %type <node> translation_unit external_decl namespace_decl struct_decl
 %type <node> destructor_decl constructor_decl function_decl var_decl block stmt
-%type <node> expr_stmt expr param struct_member
+%type <node> expr_stmt expr param struct_member expr_opt declarator fp_param
+%type <node> typedef_decl one_decl import_decl
 %type <str>  type namespace_path
-%type <vec>  struct_members stmt_list param_list arg_list ctor_args
+%type <vec>  struct_members stmt_list param_list arg_list ctor_args fp_param_list
+%type <vec>  one_decl_list
 
-%right '='
+%right '=' PLUSEQ MINUSEQ STAREQ SLASHEQ PERCENTEQ
+%left  OROR
+%left  ANDAND
+%left  '|'
+%left  '^'
+%left  '&'
+%left  EQ NE
+%left  '<' '>' LE GE
+%left  SHL SHR
 %left  '+' '-'
-%left  '*' '/'
+%left  '*' '/' '%'
 %precedence UMINUS
+%precedence UDEREF UADDR
+%precedence '~'
+%precedence '!'
+%precedence INC DEC
+%precedence SIZEOF
 %left  '.'
+%precedence POSTFIX
+%nonassoc LOWER_THAN_ELSE
+%nonassoc ELSE
 
 %%
 
@@ -73,8 +95,25 @@ translation_unit:
 external_decl:
       namespace_decl
     | struct_decl
+    | typedef_decl
+    | import_decl
     | function_decl
     | var_decl
+    ;
+
+import_decl:
+      IMPORT STRING_LITERAL
+        { cx_import(ctx, $2); } /* register imported types before the next token */
+      ';'
+        { $$ = MK(CX_NODE_EMPTY, (@$)); }
+    ;
+
+typedef_decl:
+      TYPEDEF type declarator
+        { cx_typeset_add(&ctx->types, $3->name); } /* alias is a type henceforth */
+      ';'
+        { $$ = MK(CX_NODE_TYPEDEF, (@$)); $$->type = $2; $$->name = $3->name;
+          $$->is_funcptr = $3->is_funcptr; $$->params = $3->params; }
     ;
 
 namespace_decl:
@@ -91,8 +130,10 @@ namespace_path:
     ;
 
 struct_decl:
-      STRUCT IDENT '{' struct_members '}' ';'
-        { $$ = MK(CX_NODE_STRUCT, (@$)); $$->name = $2; $$->children = $4; }
+      STRUCT IDENT
+        { cx_typeset_add(&ctx->types, $2); } /* register before the body */
+      '{' struct_members '}' ';'
+        { $$ = MK(CX_NODE_STRUCT, (@$)); $$->name = $2; $$->children = $5; }
     ;
 
 struct_members:
@@ -110,14 +151,14 @@ struct_member:
     ;
 
 destructor_decl:
-      '~' IDENT '(' ')' block
+      '~' TYPE_NAME '(' ')' block
         { $$ = MK(CX_NODE_DESTRUCTOR, (@$)); $$->name = $2; $$->body = $5; }
     ;
 
 /* C++-style constructor: a member named after the struct. The semantic pass
  * enforces that the name matches. */
 constructor_decl:
-      IDENT '(' param_list ')' block
+      TYPE_NAME '(' param_list ')' block
         { $$ = MK(CX_NODE_CONSTRUCTOR, (@$)); $$->name = $1;
           $$->params = $3; $$->body = $5; }
     ;
@@ -141,26 +182,71 @@ param_list:
     ;
 
 param:
-      type IDENT
+      type declarator
+        { $$ = MK(CX_NODE_PARAM, (@$)); $$->type = $1; $$->name = $2->name;
+          $$->is_funcptr = $2->is_funcptr; $$->params = $2->params; }
+    ;
+
+/* A declarator is a plain name or a function-pointer form `(*name)(params)`. */
+declarator:
+      IDENT
+        { $$ = MK(CX_NODE_EMPTY, (@$)); $$->name = $1; }
+    | '(' '*' IDENT ')' '(' fp_param_list ')'
+        { $$ = MK(CX_NODE_EMPTY, (@$)); $$->name = $3;
+          $$->is_funcptr = 1; $$->params = $6; }
+    ;
+
+fp_param_list:
+      %empty
+        { $$ = cx_vec_empty(); }
+    | fp_param_list ',' fp_param
+        { $$ = $1; cx_vec_push(ctx->arena, &$$, $3); }
+    | fp_param
+        { $$ = cx_vec_empty(); cx_vec_push(ctx->arena, &$$, $1); }
+    ;
+
+fp_param:
+      type
+        { $$ = MK(CX_NODE_PARAM, (@$)); $$->type = $1; }
+    | type IDENT
         { $$ = MK(CX_NODE_PARAM, (@$)); $$->type = $1; $$->name = $2; }
     ;
 
 type:
-      IDENT        { $$ = $1; }
-    /* Pointer/array declarators need symbol-table feedback to disambiguate
-     * `T * x` from `a * b`; that lands with the phase-4 semantic layer. */
+      TYPE_NAME    { $$ = $1; }
+    | AUTO         { $$ = "auto"; } /* inferred in the semantic pass */
+    | type '*'     { $$ = cx_arena_printf(ctx->arena, "%s *", $1); }
+    | type TYPE_NAME { $$ = cx_arena_printf(ctx->arena, "%s %s", $1, $2); }
     ;
 
 var_decl:
-      type IDENT ';'
-        { $$ = MK(CX_NODE_VAR_DECL, (@$)); $$->type = $1; $$->name = $2; }
-    | type IDENT '=' expr ';'
-        { $$ = MK(CX_NODE_VAR_DECL, (@$)); $$->type = $1; $$->name = $2;
-          $$->init = $4; }
+      type one_decl_list ';'
+        { $$ = MK(CX_NODE_VAR_DECL, (@$)); $$->type = $1; $$->children = $2; }
     | type IDENT '(' ctor_args ')' ';'
-        { $$ = MK(CX_NODE_VAR_DECL, (@$)); $$->type = $1; $$->name = $2;
+        { $$ = MK(CX_NODE_VAR_DECL, (@$)); $$->type = $1;
+          CxNode *d = MK(CX_NODE_EMPTY, (@$)); d->name = $2;
           CxNode *call = MK(CX_NODE_EXPR_CALL, (@$));
-          call->name = $1; call->children = $4; $$->init = call; }
+          call->name = $1; call->children = $4; d->init = call;
+          cx_vec_push(ctx->arena, &$$->children, d); }
+    ;
+
+/* One or more declarators sharing a type, e.g. `int a, b = 2, c;`. Each entry
+ * is a declarator node (name / function-pointer shape) with an optional init. */
+one_decl_list:
+      one_decl
+        { $$ = cx_vec_empty(); cx_vec_push(ctx->arena, &$$, $1); }
+    | one_decl_list ',' one_decl
+        { $$ = $1; cx_vec_push(ctx->arena, &$$, $3); }
+    ;
+
+one_decl:
+      declarator
+        { $$ = $1; }
+    | declarator '=' expr
+        { $$ = $1; $$->init = $3; }
+    | declarator '=' TYPE_NAME '(' arg_list ')'
+        { $$ = $1; CxNode *call = MK(CX_NODE_EXPR_CALL, (@$));
+          call->name = $3; call->children = $5; $$->init = call; }
     ;
 
 block:
@@ -185,6 +271,29 @@ stmt:
         { $$ = MK(CX_NODE_RETURN, (@$)); $$->init = $2; }
     | RETURN ';'
         { $$ = MK(CX_NODE_RETURN, (@$)); }
+    | IF '(' expr ')' stmt %prec LOWER_THAN_ELSE
+        { $$ = MK(CX_NODE_IF, (@$)); $$->cond = $3; $$->then = $5; }
+    | IF '(' expr ')' stmt ELSE stmt
+        { $$ = MK(CX_NODE_IF, (@$)); $$->cond = $3; $$->then = $5; $$->els = $7; }
+    | WHILE '(' expr ')' stmt
+        { $$ = MK(CX_NODE_WHILE, (@$)); $$->cond = $3; $$->body = $5; }
+    | FOR '(' expr_opt ';' expr_opt ';' expr_opt ')' stmt
+        { $$ = MK(CX_NODE_FOR, (@$)); $$->lhs = $3; $$->cond = $5;
+          $$->incr = $7; $$->body = $9; }
+    | BREAK ';'
+        { $$ = MK(CX_NODE_BREAK, (@$)); }
+    | CONTINUE ';'
+        { $$ = MK(CX_NODE_CONTINUE, (@$)); }
+    | SWITCH '(' expr ')' stmt
+        { $$ = MK(CX_NODE_SWITCH, (@$)); $$->cond = $3; $$->body = $5; }
+    | CASE expr ':' stmt
+        { $$ = MK(CX_NODE_CASE, (@$)); $$->lhs = $2; $$->body = $4; }
+    | DEFAULT ':' stmt
+        { $$ = MK(CX_NODE_DEFAULT, (@$)); $$->body = $3; }
+    | IDENT ':' stmt
+        { $$ = MK(CX_NODE_LABEL, (@$)); $$->name = $1; $$->body = $3; }
+    | GOTO IDENT ';'
+        { $$ = MK(CX_NODE_GOTO, (@$)); $$->name = $2; }
     ;
 
 expr_stmt:
@@ -215,8 +324,72 @@ expr:
         { $$ = MK(CX_NODE_EXPR_BINARY, (@$)); $$->name = "/"; $$->lhs = $1; $$->rhs = $3; }
     | '-' expr %prec UMINUS
         { $$ = MK(CX_NODE_EXPR_UNARY, (@$)); $$->name = "-"; $$->lhs = $2; }
+    | '!' expr
+        { $$ = MK(CX_NODE_EXPR_UNARY, (@$)); $$->name = "!"; $$->lhs = $2; }
+    | expr '%' expr
+        { $$ = MK(CX_NODE_EXPR_BINARY, (@$)); $$->name = "%"; $$->lhs = $1; $$->rhs = $3; }
+    | expr '<' expr
+        { $$ = MK(CX_NODE_EXPR_BINARY, (@$)); $$->name = "<"; $$->lhs = $1; $$->rhs = $3; }
+    | expr '>' expr
+        { $$ = MK(CX_NODE_EXPR_BINARY, (@$)); $$->name = ">"; $$->lhs = $1; $$->rhs = $3; }
+    | expr LE expr
+        { $$ = MK(CX_NODE_EXPR_BINARY, (@$)); $$->name = "<="; $$->lhs = $1; $$->rhs = $3; }
+    | expr GE expr
+        { $$ = MK(CX_NODE_EXPR_BINARY, (@$)); $$->name = ">="; $$->lhs = $1; $$->rhs = $3; }
+    | expr EQ expr
+        { $$ = MK(CX_NODE_EXPR_BINARY, (@$)); $$->name = "=="; $$->lhs = $1; $$->rhs = $3; }
+    | expr NE expr
+        { $$ = MK(CX_NODE_EXPR_BINARY, (@$)); $$->name = "!="; $$->lhs = $1; $$->rhs = $3; }
+    | expr ANDAND expr
+        { $$ = MK(CX_NODE_EXPR_BINARY, (@$)); $$->name = "&&"; $$->lhs = $1; $$->rhs = $3; }
+    | expr OROR expr
+        { $$ = MK(CX_NODE_EXPR_BINARY, (@$)); $$->name = "||"; $$->lhs = $1; $$->rhs = $3; }
+    | expr '|' expr
+        { $$ = MK(CX_NODE_EXPR_BINARY, (@$)); $$->name = "|"; $$->lhs = $1; $$->rhs = $3; }
+    | expr '^' expr
+        { $$ = MK(CX_NODE_EXPR_BINARY, (@$)); $$->name = "^"; $$->lhs = $1; $$->rhs = $3; }
+    | expr '&' expr
+        { $$ = MK(CX_NODE_EXPR_BINARY, (@$)); $$->name = "&"; $$->lhs = $1; $$->rhs = $3; }
+    | expr SHL expr
+        { $$ = MK(CX_NODE_EXPR_BINARY, (@$)); $$->name = "<<"; $$->lhs = $1; $$->rhs = $3; }
+    | expr SHR expr
+        { $$ = MK(CX_NODE_EXPR_BINARY, (@$)); $$->name = ">>"; $$->lhs = $1; $$->rhs = $3; }
+    | '&' expr %prec UADDR
+        { $$ = MK(CX_NODE_EXPR_UNARY, (@$)); $$->name = "&"; $$->lhs = $2; }
+    | '*' expr %prec UDEREF
+        { $$ = MK(CX_NODE_EXPR_UNARY, (@$)); $$->name = "*"; $$->lhs = $2; }
+    | expr ARROW IDENT
+        { $$ = MK(CX_NODE_EXPR_ARROW, (@$)); $$->lhs = $1; $$->name = $3; }
+    | expr '[' expr ']'
+        { $$ = MK(CX_NODE_EXPR_INDEX, (@$)); $$->lhs = $1; $$->rhs = $3; }
+    | '(' type ')' expr %prec UDEREF
+        { $$ = MK(CX_NODE_EXPR_CAST, (@$)); $$->type = $2; $$->lhs = $4; }
+    | SIZEOF '(' type ')' %prec SIZEOF
+        { $$ = MK(CX_NODE_EXPR_SIZEOF, (@$)); $$->type = $3; }
+    | SIZEOF expr
+        { $$ = MK(CX_NODE_EXPR_SIZEOF, (@$)); $$->lhs = $2; }
+    | '~' expr
+        { $$ = MK(CX_NODE_EXPR_UNARY, (@$)); $$->name = "~"; $$->lhs = $2; }
+    | INC expr
+        { $$ = MK(CX_NODE_EXPR_UNARY, (@$)); $$->name = "++"; $$->lhs = $2; }
+    | DEC expr
+        { $$ = MK(CX_NODE_EXPR_UNARY, (@$)); $$->name = "--"; $$->lhs = $2; }
+    | expr INC %prec POSTFIX
+        { $$ = MK(CX_NODE_EXPR_POSTFIX, (@$)); $$->name = "++"; $$->lhs = $1; }
+    | expr DEC %prec POSTFIX
+        { $$ = MK(CX_NODE_EXPR_POSTFIX, (@$)); $$->name = "--"; $$->lhs = $1; }
     | expr '=' expr
-        { $$ = MK(CX_NODE_EXPR_ASSIGN, (@$)); $$->lhs = $1; $$->rhs = $3; }
+        { $$ = MK(CX_NODE_EXPR_ASSIGN, (@$)); $$->name = "="; $$->lhs = $1; $$->rhs = $3; }
+    | expr PLUSEQ expr
+        { $$ = MK(CX_NODE_EXPR_ASSIGN, (@$)); $$->name = "+="; $$->lhs = $1; $$->rhs = $3; }
+    | expr MINUSEQ expr
+        { $$ = MK(CX_NODE_EXPR_ASSIGN, (@$)); $$->name = "-="; $$->lhs = $1; $$->rhs = $3; }
+    | expr STAREQ expr
+        { $$ = MK(CX_NODE_EXPR_ASSIGN, (@$)); $$->name = "*="; $$->lhs = $1; $$->rhs = $3; }
+    | expr SLASHEQ expr
+        { $$ = MK(CX_NODE_EXPR_ASSIGN, (@$)); $$->name = "/="; $$->lhs = $1; $$->rhs = $3; }
+    | expr PERCENTEQ expr
+        { $$ = MK(CX_NODE_EXPR_ASSIGN, (@$)); $$->name = "%="; $$->lhs = $1; $$->rhs = $3; }
     ;
 
 arg_list:
@@ -235,6 +408,12 @@ ctor_args:
         { $$ = cx_vec_empty(); cx_vec_push(ctx->arena, &$$, $1); }
     | ctor_args ',' expr
         { $$ = $1; cx_vec_push(ctx->arena, &$$, $3); }
+    ;
+
+/* Optional expression, used by `for (init; cond; incr)`. May be NULL. */
+expr_opt:
+      %empty { $$ = NULL; }
+    | expr   { $$ = $1; }
     ;
 
 %%

@@ -1,0 +1,30 @@
+namespace demo {
+
+    struct Counter {
+        int value;
+
+        Counter(int v) {
+            value = v;
+        }
+
+        ~Counter() {
+            reset(value);
+        }
+    };
+
+    int reset(int v) {
+        return v;
+    }
+
+    Counter make_counter(int v) {
+        Counter c(v);
+        return c;
+    }
+
+    int compute() {
+        auto n = 5;
+        auto c = make_counter(n);
+        auto d = Counter(7);
+        return c.value + d.value;
+    }
+}

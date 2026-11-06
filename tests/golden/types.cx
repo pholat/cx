@@ -1,0 +1,34 @@
+namespace demo {
+
+    typedef unsigned int uint;
+    typedef int (*cmp_fn)(int, int);
+
+    struct Point {
+        int x;
+        int y;
+    };
+
+    typedef Point Vec;
+
+    int bigger(int a, int b) {
+        return a > b;
+    }
+
+    int pick(int (*cmp)(int, int), int a, int b) {
+        if (cmp(a, b)) {
+            return a;
+        }
+        return b;
+    }
+
+    Vec origin() {
+        Vec p;
+        p.x = 0;
+        p.y = 0;
+        return p;
+    }
+
+    int use(uint n) {
+        return (int)n;
+    }
+}

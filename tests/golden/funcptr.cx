@@ -1,0 +1,15 @@
+namespace demo {
+
+    int add(int a, int b) {
+        return a + b;
+    }
+
+    int apply(int (*op)(int, int), int x, int y) {
+        return op(x, y);
+    }
+
+    int run() {
+        int (*op)(int, int) = add;
+        return apply(op, 2, 3);
+    }
+}

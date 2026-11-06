@@ -1,0 +1,30 @@
+namespace demo {
+
+    struct Point {
+        int x;
+        int y;
+    };
+
+    int sum_point(Point *p) {
+        return p->x + p->y;
+    }
+
+    void set_x(Point *p, int v) {
+        p->x = v;
+    }
+
+    int first_of(int *values, int index) {
+        return values[index];
+    }
+
+    Point *identity(Point *p) {
+        return p;
+    }
+
+    void locals() {
+        int v = 5;
+        int *p = &v;
+        *p = 7;
+        v = *p + v;
+    }
+}

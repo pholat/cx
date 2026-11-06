@@ -16,4 +16,9 @@ void cx_emit_line(CxBuf *buf, int line, const char *file);
 void cx_emit_c(CxArena *arena, CxBuf *buf, CxNode *tu,
                const CxSymbolTable *sema, const char *source_name);
 
+/* Emit a declaration-only header (include guard + typedefs + struct definitions
+ * + prototypes). */
+void cx_emit_h(CxArena *arena, CxBuf *buf, CxNode *tu,
+               const CxSymbolTable *sema, const char *source_name);
+
 #endif /* CX_CODEGEN_H */

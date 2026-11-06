@@ -1,0 +1,10 @@
+import "imported.hx";
+
+namespace app {
+
+    int use_thing() {
+        Thing t;
+        t.x = 5;
+        return get_x(t);
+    }
+}

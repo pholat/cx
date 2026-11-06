@@ -1,0 +1,10 @@
+#include <stddef.h>
+
+#define CX_ANSWER 42
+
+namespace demo {
+
+    int answer() {
+        return CX_ANSWER;
+    }
+}

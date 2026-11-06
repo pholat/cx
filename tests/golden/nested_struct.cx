@@ -4,6 +4,10 @@ namespace demo {
         struct Inner {
             int x;
 
+            Inner() {
+                x = 0;
+            }
+
             ~Inner() {
                 reset(x);
             }

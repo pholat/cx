@@ -136,11 +136,27 @@ const char *cx_node_kind_name(CxNodeKind kind) {
     case CX_NODE_EXPR_STRING:      return "string";
     case CX_NODE_EXPR_CALL:        return "call";
     case CX_NODE_EXPR_FIELD:       return "field";
+    case CX_NODE_EXPR_ARROW:       return "arrow";
+    case CX_NODE_EXPR_INDEX:       return "index";
+    case CX_NODE_EXPR_CAST:        return "cast";
+    case CX_NODE_EXPR_SIZEOF:      return "sizeof";
     case CX_NODE_EXPR_BINARY:      return "binary";
     case CX_NODE_EXPR_UNARY:       return "unary";
     case CX_NODE_EXPR_ASSIGN:      return "assign";
     case CX_NODE_EXPR_PAREN:       return "paren";
+    case CX_NODE_EXPR_POSTFIX:     return "postfix";
     case CX_NODE_EMPTY:            return "empty";
+    case CX_NODE_IF:               return "if";
+    case CX_NODE_WHILE:            return "while";
+    case CX_NODE_FOR:              return "for";
+    case CX_NODE_BREAK:            return "break";
+    case CX_NODE_CONTINUE:         return "continue";
+    case CX_NODE_SWITCH:           return "switch";
+    case CX_NODE_CASE:             return "case";
+    case CX_NODE_DEFAULT:          return "default";
+    case CX_NODE_LABEL:            return "label";
+    case CX_NODE_GOTO:             return "goto";
+    case CX_NODE_TYPEDEF:          return "typedef";
     case CX_NODE_ERROR:            return "error";
     }
     return "?";

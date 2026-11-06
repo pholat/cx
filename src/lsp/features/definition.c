@@ -1,11 +1,51 @@
 #include "cx/cx.h"
-#include "../lsp_internal.h"
 
-/* TODO(phase 5): resolve the symbol under the cursor via the shared symbol
- * table (cx_sema_find_symbol) and return textDocument/definition. */
-int cx_lsp_definition(const char *uri, int line, int character) {
-    (void)uri;
-    (void)line;
-    (void)character;
+#include <string.h>
+
+#include "../json.h"
+#include "../lsp_internal.h"
+#include "nav.h"
+
+/* Go-to-definition: resolve the identifier under the cursor through the shared
+ * symbol table and return its declaration location. */
+int cx_lsp_definition(CxBuf *out, const char *uri, const char *text, size_t len,
+                      int line, int character) {
+    CxArena *arena = cx_arena_new();
+    CxDiagList diags;
+    cx_diaglist_init(&diags, uri);
+
+    CxNode *tu = cx_parse(arena, text, len, uri, &diags);
+    CxSymbolTable *sema = tu ? cx_sema_build(arena, tu, &diags) : NULL;
+
+    CxNode *node = tu ? cx_lsp_node_at(tu, line + 1, character + 1) : NULL;
+    CxSymbol *sym =
+        (sema && node && node->name) ? cx_sema_find_symbol(sema, node->name) : NULL;
+
+    if (sym && sym->decl) {
+        /* The declaration may live in an imported file; report that file's URI. */
+        const char *decl_file = sym->file ? sym->file : uri;
+        CxBuf target;
+        cx_buf_init(&target);
+        if (strcmp(decl_file, uri) == 0 || strncmp(decl_file, "file://", 7) == 0)
+            cx_buf_puts(&target, decl_file);
+        else if (decl_file[0] == '/') {
+            cx_buf_puts(&target, "file://");
+            cx_buf_puts(&target, decl_file);
+        } else {
+            cx_buf_puts(&target, decl_file);
+        }
+
+        cx_buf_puts(out, "{\"uri\":");
+        cx_json_write_string(out, target.data ? target.data : uri);
+        cx_buf_puts(out, ",\"range\":");
+        cx_lsp_write_range(out, sym->decl->span);
+        cx_buf_putc(out, '}');
+        cx_buf_free(&target);
+    } else {
+        cx_buf_puts(out, "null");
+    }
+
+    cx_diaglist_free(&diags);
+    cx_arena_free(arena);
     return 0;
 }

@@ -25,6 +25,45 @@ static void respond_null(const JsonValue *id) {
     cx_buf_free(&b);
 }
 
+static void respond_result(const JsonValue *id, const char *result_json) {
+    CxBuf b;
+    cx_buf_init(&b);
+    cx_buf_puts(&b, "{\"jsonrpc\":\"2.0\",\"id\":");
+    cx_json_write(&b, id);
+    cx_buf_puts(&b, ",\"result\":");
+    cx_buf_puts(&b, (result_json && result_json[0]) ? result_json : "null");
+    cx_buf_putc(&b, '}');
+    send_json(b.data);
+    cx_buf_free(&b);
+}
+
+/* documentSymbol (kind 0), definition (1), hover (2). Each reparses the stored
+ * document through the shared parser + symbol table. */
+static void handle_query(const JsonValue *params, const JsonValue *id, int kind) {
+    const JsonValue *td = cx_json_get(params, "textDocument");
+    const char *uri = cx_json_string(cx_json_get(td, "uri"));
+    if (!uri) {
+        respond_null(id);
+        return;
+    }
+
+    CxDocument *doc = cx_doc_store_get(uri);
+    const char *text = (doc && doc->text) ? doc->text : "";
+    size_t len = doc ? doc->len : 0;
+
+    const JsonValue *pos = cx_json_get(params, "position");
+    int line = (int)cx_json_int(cx_json_get(pos, "line"), 0);
+    int ch = (int)cx_json_int(cx_json_get(pos, "character"), 0);
+
+    CxBuf result;
+    cx_buf_init(&result);
+    if (kind == 0) cx_lsp_document_symbols(&result, uri, text, len);
+    else if (kind == 1) cx_lsp_definition(&result, uri, text, len, line, ch);
+    else cx_lsp_hover(&result, uri, text, len, line, ch);
+    respond_result(id, result.data ? result.data : "null");
+    cx_buf_free(&result);
+}
+
 static void handle_initialize(const JsonValue *id) {
     CxBuf b;
     cx_buf_init(&b);
@@ -132,6 +171,12 @@ int cx_lsp_run(void) {
             on_did_change(params);
         } else if (method && !strcmp(method, "textDocument/didClose")) {
             on_did_close(params);
+        } else if (method && !strcmp(method, "textDocument/documentSymbol")) {
+            handle_query(params, id, 0);
+        } else if (method && !strcmp(method, "textDocument/definition")) {
+            handle_query(params, id, 1);
+        } else if (method && !strcmp(method, "textDocument/hover")) {
+            handle_query(params, id, 2);
         } else if (id) {
             /* Unknown request: answer with a null result so the client is not stuck. */
             respond_null(id);

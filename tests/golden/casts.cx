@@ -1,0 +1,16 @@
+namespace demo {
+
+    int as_int(double v) {
+        return (int)v;
+    }
+
+    int sizes(int a) {
+        int b = sizeof(int);
+        int c = sizeof a;
+        return b + c;
+    }
+
+    char *as_bytes(int *p) {
+        return (char *)p;
+    }
+}

@@ -14,6 +14,7 @@ typedef struct {
     char      *type;      /* declared type, for vars and struct fields */
     CxNodeKind kind;
     CxSpan     span;
+    const char *file;      /* source path the declaration was parsed from */
     CxNode    *decl;      /* originating AST node */
     CxNode    *dtor;      /* destructor body for structs, else NULL */
     CxNode    *ctor;      /* constructor body for structs, else NULL */

@@ -31,8 +31,12 @@ void        cx_doc_store_remove(const char *uri);
 int cx_lsp_diagnostics_notification(CxBuf *out, const char *uri,
                                     const char *text, size_t len);
 
-int cx_lsp_document_symbols(const char *uri);
-int cx_lsp_definition(const char *uri, int line, int character);
-int cx_lsp_hover(const char *uri, int line, int character);
+/* Each builds the JSON `result` value for the request into `out`. */
+int cx_lsp_document_symbols(CxBuf *out, const char *uri, const char *text,
+                            size_t len);
+int cx_lsp_definition(CxBuf *out, const char *uri, const char *text, size_t len,
+                      int line, int character);
+int cx_lsp_hover(CxBuf *out, const char *uri, const char *text, size_t len,
+                 int line, int character);
 
 #endif /* CX_LSP_INTERNAL_H */

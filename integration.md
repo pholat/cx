@@ -254,9 +254,10 @@ not architectural blockers):
 * **Structs require a trailing `;`** (`};`), exactly like C/C++.
 * **No pointer/array declarators yet.** `T * x` is deferred until the semantic
   layer can disambiguate it from the expression `a * b`.
-* **No `.hx` header emission yet.** `.hx` files are currently transpiled the
-  same way as `.cx`. Declaration-only headers with include guards land before
-  multi-module use.
+* **`.hx` headers are declaration-only.** `cx build foo.hx -o foo.h` emits a
+  guarded header (typedefs, struct definitions, prototypes) for use from C.
+  Cx-to-Cx `import` (so one `.cx` can use another's types) is not implemented
+  yet.
 * **No `#include`/imports in Cx.** Preprocessor lines are ignored by the lexer.
 * **Cross-namespace name resolution is partial.** A call is mangled only when the
   bare function name is unambiguous in the file's symbol table.
@@ -312,9 +313,9 @@ No tree-sitter parser is required.
 | :--- | :--- |
 | `initialize` / `shutdown` / `exit` | ✅ |
 | `textDocument/publishDiagnostics` | ✅ pushed on `didOpen` / `didChange` / `didClose` |
-| `textDocument/documentSymbol` | ⏭ walk the AST |
-| `textDocument/definition` | ⏭ resolve via the shared symbol table |
-| `textDocument/hover` | ⏭ type/signature from the symbol table |
+| `textDocument/documentSymbol` | ✅ namespaces, structs (+fields), functions, globals |
+| `textDocument/definition` | ✅ via the shared symbol table |
+| `textDocument/hover` | ✅ signature/type from the symbol table |
 
 Diagnostics reuse the transpiler's parser: on every open/change the server parses
 the buffer, converts each `CxDiagnostic` into an LSP `Diagnostic` (1-based

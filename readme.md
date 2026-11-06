@@ -42,6 +42,8 @@ This document evaluates the architectural approaches for extending the C languag
 The full architecture, translation rules, directory layout, and a phased roadmap
 are in [`plan.md`](./plan.md). For wiring Cx into an existing C build (Makefile /
 CMake) and editor setup, see [`integration.md`](./integration.md).
+[`TECHNICAL.md`](./TECHNICAL.md) is the living technical map of the codebase —
+read it first before starting a session, and update it at the end of one.
 
 ---
 

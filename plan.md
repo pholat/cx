@@ -257,9 +257,44 @@ struct Outer {
 
 Nested types are referenced by their bare name (`Inner`), consistent with the
 current bare-name type resolution. Nested structs may themselves be nested, and
-their constructors/destructors are emitted like any other struct's. Note that
-embedding a destructible struct by value does **not** currently auto-construct or
-auto-destruct the field.
+their constructors/destructors are emitted like any other struct's.
+
+Embedded members are wired into the enclosing struct's constructor and
+destructor:
+
+* the enclosing constructor calls `<Field>__ctor(&self->field)` for every
+  embedded field whose type declares a **zero-argument** constructor, before its
+  own body (declaration order);
+* the enclosing destructor calls `<Field>__dtor(&self->field)` for every
+  embedded field whose type has a destructor, after its own body (reverse
+  declaration order).
+
+Fields whose constructor requires arguments are not auto-constructed; pointer
+fields are never auto-constructed/destructed. If a struct embeds a destructible
+member but declares no destructor of its own, the member's destructor is not
+called — declare a `~Type() {}` (even empty) to get one, or the enclosing type
+has no place to hook the member calls.
+
+### 5.2d Expressions and control flow
+
+* Operators: `+ - * / %`, comparisons `== != < > <= >=`, logical `&& || !`,
+  bitwise `& | ^ ~ << >>`, increment/decrement `++ --` (prefix and postfix),
+  assignment `=` with compound `+= -= *= /= %=`, unary `-`, field access `.` and
+  `->`, subscript `[]`, address-of `&`, dereference `*`, calls, parentheses.
+* Types: a single type token — built-ins from a fixed set, or any struct name —
+  plus `T *` pointers. The lexer tracks known type names (the C "typedef-name"
+  lexer hack), so `T *x` stays unambiguous from the expression `a * b`.
+  Multi-word types (`unsigned int`, `long long`) are not supported.
+* Statements: expression statements, `return`, blocks, `if`/`else`, `while`,
+  `for`, `break`, `continue`.
+* `for` takes the C form `for (init; cond; incr)` where each clause is optional
+  (`for (;;)`); declaration-in-init is not supported yet.
+* Preprocessor lines (`#include`, `#define`, …) at the start of a line are
+  captured and emitted verbatim at the top of the generated C.
+
+Still missing for heavy C code (see `examples/klib/REQUIRED_FEATURES.md`):
+casts, `sizeof`, `switch`/`goto`, function pointers, `auto`, and multiple
+translation units.
 
 ### 5.3 Headers (`.hx`)
 

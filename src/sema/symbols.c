@@ -26,7 +26,8 @@ static char *join_ns(CxArena *a, const char *ns, const char *name) {
     return cx_arena_printf(a, "%s::%s", ns, name);
 }
 
-static CxSymbol *symbol_new(CxArena *a, CxNode *n, const char *ns, CxNodeKind kind) {
+static CxSymbol *symbol_new(CxArena *a, CxNode *n, const char *ns,
+                            CxNodeKind kind, const char *file) {
     CxSymbol *s = (CxSymbol *)cx_arena_alloc(a, sizeof(CxSymbol));
     if (!s) return NULL;
     s->name = n->name;
@@ -35,13 +36,14 @@ static CxSymbol *symbol_new(CxArena *a, CxNode *n, const char *ns, CxNodeKind ki
     s->type = n->type;
     s->kind = kind;
     s->span = n->span;
+    s->file = file;
     s->decl = n;
     s->dtor = NULL;
     s->ctor = NULL;
     return s;
 }
 
-static void walk(BuildCtx *c, CxNode *n, const char *ns) {
+static void walk(BuildCtx *c, CxNode *n, const char *ns, const char *file) {
     if (!n) return;
     switch (n->kind) {
     case CX_NODE_TRANSLATION_UNIT:
@@ -49,14 +51,14 @@ static void walk(BuildCtx *c, CxNode *n, const char *ns) {
         for (int i = 0; i < n->children.len; i++) {
             CxNode *ch = n->children.items[i];
             if (ch->kind == CX_NODE_NAMESPACE)
-                walk(c, ch, join_ns(c->arena, ns, ch->name));
+                walk(c, ch, join_ns(c->arena, ns, ch->name), file);
             else
-                walk(c, ch, ns);
+                walk(c, ch, ns, file);
         }
         break;
 
     case CX_NODE_STRUCT: {
-        CxSymbol *s = symbol_new(c->arena, n, ns, CX_NODE_STRUCT);
+        CxSymbol *s = symbol_new(c->arena, n, ns, CX_NODE_STRUCT, file);
         if (!s) return;
         table_push(c->table, s);
         for (int i = 0; i < n->children.len; i++) {
@@ -90,22 +92,23 @@ static void walk(BuildCtx *c, CxNode *n, const char *ns) {
             } else if (m->kind == CX_NODE_STRUCT) {
                 /* Nested type: its C tag is <Outer>__<Inner>, so qualify it
                  * with the containing struct's name. */
-                walk(c, m, join_ns(c->arena, ns, n->name));
+                walk(c, m, join_ns(c->arena, ns, n->name), file);
             } else if (m->kind == CX_NODE_VAR_DECL) {
-                symbol_new(c->arena, m, ns, CX_NODE_VAR_DECL); /* register */
+                /* Struct fields are resolved structurally by the emitter; the
+                 * symbol table does not need them. */
             }
         }
         break;
     }
 
     case CX_NODE_FUNCTION: {
-        CxSymbol *s = symbol_new(c->arena, n, ns, CX_NODE_FUNCTION);
+        CxSymbol *s = symbol_new(c->arena, n, ns, CX_NODE_FUNCTION, file);
         table_push(c->table, s);
         break;
     }
 
     case CX_NODE_VAR_DECL: {
-        CxSymbol *s = symbol_new(c->arena, n, ns, CX_NODE_VAR_DECL);
+        CxSymbol *s = symbol_new(c->arena, n, ns, CX_NODE_VAR_DECL, file);
         table_push(c->table, s);
         break;
     }
@@ -130,8 +133,59 @@ static void check_calls(BuildCtx *c, CxNode *n) {
     check_calls(c, n->rhs);
     check_calls(c, n->init);
     check_calls(c, n->body);
+    check_calls(c, n->cond);
+    check_calls(c, n->then);
+    check_calls(c, n->els);
+    check_calls(c, n->incr);
     for (int i = 0; i < n->children.len; i++) check_calls(c, n->children.items[i]);
     for (int i = 0; i < n->params.len; i++) check_calls(c, n->params.items[i]);
+}
+
+/* Infer the type of an initializer for `auto`. */
+static const char *infer_type(BuildCtx *c, CxNode *init) {
+    if (!init) return NULL;
+    switch (init->kind) {
+    case CX_NODE_EXPR_CALL: {
+        CxSymbol *fn = cx_sema_find_function(c->table, init->name);
+        if (fn && fn->type) return fn->type;
+        CxSymbol *st = cx_sema_find_struct(c->table, init->name);
+        if (st) return st->name; /* constructor call */
+        return NULL;
+    }
+    case CX_NODE_EXPR_INT:    return "int";
+    case CX_NODE_EXPR_STRING: return "char *";
+    case CX_NODE_EXPR_PAREN:  return infer_type(c, init->lhs);
+    case CX_NODE_EXPR_CAST:   return init->type;
+    case CX_NODE_EXPR_IDENT: {
+        CxSymbol *s = cx_sema_find_symbol(c->table, init->name);
+        return s ? s->type : NULL;
+    }
+    default:
+        return NULL;
+    }
+}
+
+/* Rewrite `auto` declarations to the inferred type. Walks the whole tree so it
+ * covers locals inside function bodies. */
+static void infer_auto(BuildCtx *c, CxNode *n) {
+    if (!n) return;
+    if (n->kind == CX_NODE_VAR_DECL && n->type && strcmp(n->type, "auto") == 0) {
+        const char *t = NULL;
+        for (int i = 0; i < n->children.len && !t; i++)
+            t = infer_type(c, n->children.items[i]->init);
+        if (t) n->type = (char *)t;
+        else cx_error(c->diags, n->span, "cannot infer type for 'auto'");
+    }
+    infer_auto(c, n->lhs);
+    infer_auto(c, n->rhs);
+    infer_auto(c, n->init);
+    infer_auto(c, n->body);
+    infer_auto(c, n->cond);
+    infer_auto(c, n->then);
+    infer_auto(c, n->els);
+    infer_auto(c, n->incr);
+    for (int i = 0; i < n->children.len; i++) infer_auto(c, n->children.items[i]);
+    for (int i = 0; i < n->params.len; i++) infer_auto(c, n->params.items[i]);
 }
 
 CxSymbolTable *cx_sema_build(CxArena *arena, CxNode *tu, CxDiagList *diags) {
@@ -139,7 +193,10 @@ CxSymbolTable *cx_sema_build(CxArena *arena, CxNode *tu, CxDiagList *diags) {
         (CxSymbolTable *)cx_arena_alloc(arena, sizeof(CxSymbolTable));
     if (!table) return NULL;
     BuildCtx c = {arena, table, diags};
-    walk(&c, tu, NULL);
+    walk(&c, tu, NULL, tu ? tu->file : NULL);
+    for (int i = 0; tu && i < tu->imports.len; i++)
+        walk(&c, tu->imports.items[i], NULL, tu->imports.items[i]->file);
+    infer_auto(&c, tu);
     check_calls(&c, tu);
     return table;
 }
