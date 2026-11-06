@@ -7,6 +7,7 @@
 #include "cx/buf.h"
 #include "cx/diag.h"
 #include "cx/parser.h"
+#include "cx/macro.h"
 #include "cx/symbols.h"
 #include "cx/codegen.h"
 #include "cx/lsp.h"

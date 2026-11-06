@@ -1,5 +1,4 @@
 # Cx — Technical Notes
-
 > **Living document.** Read this first when starting a session. At the end of
 > every session, update §4 "Language surface", §8 "Roadmap", and §9
 > "Session log". Keep it accurate — it is the map of the codebase.
@@ -35,9 +34,10 @@ cx/
 ├── include/cx/                 # public headers
 │   ├── span.h   ast.h   buf.h   diag.h
 │   ├── parser.h                # CxParseCtx, CxTypeSet, cx_parse
+│   ├── macro.h                 # macro_rules! expansion (pre-parse pass)
 │   ├── symbols.h codegen.h lsp.h cx.h (umbrella)
 ├── src/
-│   ├── ast.c buf.c diag.c typeset.c
+│   ├── ast.c buf.c diag.c typeset.c macro.c
 │   ├── sema/   symbols.c scope.c raii.c
 │   ├── codegen/ mangle.c line_map.c c_emitter.c
 │   ├── lsp/    json.{h,c} lsp_internal.h transport.c documents.c server.c
@@ -70,6 +70,7 @@ grammar, and uses `-MMD -MP` so editing `include/cx/*.h` triggers rebuilds.
 | Command | Effect |
 | :-- | :-- |
 | `cx build <file.cx> [-o <out.c>]` | transpile to C (stdout without `-o`) |
+| `cx expand <file.cx>` | print the source after `macro_rules!` expansion |
 | `cx dump <file.cx>` | print the AST |
 | `cx lsp` | run the language server on stdio |
 | `cx --version` | print version |
@@ -206,6 +207,41 @@ verbatim.
   attribute `__attribute__((name))`).
 * **Rejected**: `#[ctor]` / `#[dtor]` are an error — constructor/destructor
   declaration keeps the Cx syntax (`Type(args) { … }` / `~Type() { … }`).
+
+### Macros (`macro_rules!`)
+
+Definitions and invocations are expanded by a **token-level pre-parse pass**
+(`src/macro.c`), before the Cx parser runs. A definition produces no C:
+
+```cxc
+macro_rules! make_vec {
+    ($name:ident, $t:ty) => {
+        struct $name { $t *data; int len; };
+        $t $name##_first($name *v) { return v->data[0]; }
+    };
+}
+make_vec!(IntVec, int);          /* -> struct IntVec { … }; int IntVec_first( … ) */
+```
+
+* **Fragments**: `$x:ident`, `$x:ty`, `$x:expr`, `$x:stmt`, `$x:tt`, `$x:lit`,
+  `$x:path`, `$x:field`.
+* **Repetition**: `$( … )*` and `$( … )+`, with an optional single separator,
+  e.g. `$( $x:expr ),*`. A trailing separator is accepted.
+* **Concatenation**: `$name##_new` joins tokens into one identifier.
+* **Invocation position**: any position the parser accepts after substitution —
+  item/declaration, statement, or **expression** (`int m = max!(a, b);`).
+* **Nested invocations** are expanded by repeated passes (a macro body may call
+  another macro; the expansion is re-scanned).
+* An invocation whose name is **not** a `macro_rules!` macro is left untouched,
+  so the C-passthrough form `NAME!( … )` still works.
+* Definitions are removed from the parsed source. Definitions are hoisted for
+  resolution (an invocation may precede its definition). `cx expand` prints the
+  expanded source for debugging.
+* **Not yet**: hygiene (body-introduced identifiers are emitted verbatim); macro
+  definitions do not cross `import` boundaries (each file is expanded on its
+  own, so an imported `.hx` cannot export a macro to its importer); and macro
+  definitions are not indexed by the LSP (they are gone before the AST is
+  built).
 
 ### Headers and imports
 `cx build foo.hx -o foo.h` emits a **declaration-only** header: an include guard,
@@ -371,6 +407,19 @@ Read this before changing the grammar/lexer.
   and `test` are front-end only (never emitted as attributes); `ctor`/`dtor` are
   rejected with an error. Attributes are accepted before external declarations
   and struct members, not statements.
+* **Macro expansion is a text pass before parsing** (`src/macro.c`). It tokenises
+  the source into a small token tree, removes `macro_rules!` definitions, and
+  substitutes matching invocations. Consequences: (a) definitions are not in the
+  AST (no LSP macro symbols yet); (b) hygienic renaming is not implemented;
+  (c) `$x:expr`/`$x:ty` capture greedily to the next top-level `,`/`;`, so a
+  pattern cannot put another literal fragment after them unambiguously; (d) a
+  trailing `;` after an item-position invocation is consumed (the expansion
+  supplies the declarations), while an expression-position `;` is preserved;
+  (e) `raw { … }`, preprocessor lines and `#[…]` attributes are opaque to the
+  expander and are passed through verbatim. Expansion is iterative (max 64
+  passes), so macros may invoke other macros. Nested repetitions are not fully
+  modelled (the outer count is inferred from the first metavariable it finds);
+  single-level `$( … )*`/`$( … )+` is the supported case.
 * Bison blocks are written for **GNU Bison 3.8**; the parser is pure/reentrant
   and the scanner is `reentrant bison-bridge bison-locations`.
 * In the Neovim syntax file, `~` must be escaped (`\~`) — `~` is the
@@ -382,18 +431,19 @@ Read this before changing the grammar/lexer.
 
 Ordered roughly by value (see `examples/klib/REQUIRED_FEATURES.md` for the full
 matrix). Done: **C interop** (`raw { … }` + `#include` + `NAME!(…)` macro
-invocation passthrough), **static traits** (`trait`/`implements`), and
-**attributes** (`#[…]`).
+invocation passthrough), **static traits** (`trait`/`implements`), **attributes**
+(`#[…]`), and **`macro_rules!`** (item + expression-position expansion, see §4).
 
-1. **`macro!`** — Rust-style token macros: item `macro_rules!` (generative, types
-   *and* functions) plus expression-position invocation (which would also give a
-   postfix-call syntax for trait tables). See
-   [`MACRO_RULES.md`](./MACRO_RULES.md) and [`GENERICS.md`](./GENERICS.md) §6.
-2. **klib-backed containers** — `List<T>` / `Map<K,V>` on klib, via macros or
-   (later) templates — see the design note below. With `raw`/macro passthrough
-   and static traits in place, a `macro_rules!` container layer is the next step.
-3. A paired `.hx`/`.cx` model (the `.c` includes its header and skips duplicate
+1. **klib-backed containers** — `List<T>` / `Map<K,V>` on klib, via macros or
+   (later) templates — see the design note below. With `macro_rules!`, `raw`
+   passthrough and static traits in place, a macro-defined container layer is the
+   next step.
+2. A paired `.hx`/`.cx` model (the `.c` includes its header and skips duplicate
    declarations).
+
+Macro follow-ups (not blockers): hygiene for body-introduced identifiers,
+LSP indexing/hover for macro definitions, and a richer fragment matcher
+(backtracking beyond the current greedy `expr`/`ty` capture).
 
 ### Generics & macros (design note — under discussion)
 
@@ -568,6 +618,33 @@ Append a row per session with the headline changes.
 * `#[ctor]` / `#[dtor]` raise an error — ctor/dtor declaration keeps `Type(args)`
   / `~Type()`.
 * Not yet: attributes on statements.
+
+### Session 2026-11-06 (`macro_rules!`)
+
+* **Roadmap 1 — `macro_rules!`.** Added a token-level pre-parse expander
+  (`include/cx/macro.h`, `src/macro.c`): tokenises into a token tree, collects
+  and removes `macro_rules!` definitions, matches invocations, applies `##`
+  concatenation, unrolls `$( … )*` / `$( … )+` repetitions with optional single
+  separators, and substitutes fragments (`ident`, `ty`, `expr`, `stmt`, `tt`,
+  `lit`, `path`, `field`). Expansion is iterative (nested invocations) and runs
+  before `cx_parse` / `cx_import`, so generated types register in the lexer type
+  set and generated functions in the symbol table.
+* **Expression-position invocation** works because the expansion is textual; the
+  result is re-parsed like ordinary Cx. Unknown `NAME!( … )` invocations are left
+  alone, preserving C-macro passthrough.
+* Item-position invocations own a trailing `;` (the expansion supplies complete
+  declarations); expression-position invocations keep theirs.
+* `cx expand <file>` prints the expanded source. `raw { … }`, preprocessor lines
+  and `#[…]` attributes are opaque to the expander (passed through verbatim).
+* Tests: `tests/golden/macro_rules.cx` (generated struct + function, `##`,
+  repetition, expression position, nested macro invocation),
+  `tests/golden/traits_make_total.cx` (`make_total!(total, Row)` generates the
+  `total(Row)` function against the static vtable), and
+  `tests/golden/traits_macro.cx` (`total!(r)` is an expression macro over a
+  generic `iterable_total(void *, len, at)` helper). The two trait examples
+  show the generated-function and expression-macro forms side by side.
+* Not yet: hygiene; LSP symbols/hover for macro definitions; richer
+  fragment capture (current `expr`/`ty` are greedy to the next `,`/`;`).
 
 ---
 

@@ -1,0 +1,55 @@
+trait Iterable {
+    int len(self);
+    int at(self, int i);
+}
+
+// Generate `total` with a macro. The macro is defined first, then invoked
+// inside the namespace to emit the function. The generated body reaches the
+// installed static vtable (`r.Iterable`) using function-pointer locals, since
+// Cx has no postfix call syntax.
+macro_rules! make_total {
+    ($name:ident, $t:ty) => {
+        int $name($t r) {
+            int (*len)(void *) = r.Iterable->len;
+            int (*at)(void *, int) = r.Iterable->at;
+            int acc = 0;
+            int i = 0;
+            for (i = 0; i < len(&r); i = i + 1) {
+                acc += at(&r, i);
+            }
+            return acc;
+        }
+    };
+}
+
+namespace demo {
+
+    struct Row {
+        int *cells;
+        int n;
+
+        Row(int *c, int count) {
+            cells = c;
+            n = count;
+        }
+
+        implements Iterable {
+            int len(self) {
+                return self->n;
+            }
+            int at(self, int i) {
+                return self->cells[i];
+            }
+        }
+    };
+
+    // Item-position invocation after a struct definition: the trailing `;`
+    // belongs to the invocation, and the expansion supplies the function.
+    make_total!(total, Row);
+
+    int run() {
+        int buf = 0;
+        Row r(&buf, 1);
+        return total(r);
+    }
+}

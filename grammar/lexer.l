@@ -299,7 +299,10 @@ void cx_import(CxParseCtx *ctx, const char *raw) {
     if (ctx->active_len < ctx->active_cap)
         ctx->active[ctx->active_len++] = cx_arena_strdup(ctx->arena, resolved);
 
-    CxNode *imported = parse_source(ctx, src, got, resolved, 1);
+    char *expanded = cx_macro_expand(ctx->arena, src, got, resolved, ctx->diags);
+    CxNode *imported = parse_source(ctx, expanded ? expanded : src,
+                                    expanded ? strlen(expanded) : got,
+                                    resolved, 1);
     free(src);
 
     if (ctx->active_len > 0) ctx->active_len--;
@@ -334,7 +337,9 @@ CxNode *cx_parse(CxArena *arena, const char *src, size_t len,
     for (int i = 0; builtin_types[i]; i++)
         cx_typeset_add(&ctx.types, builtin_types[i]);
 
-    CxNode *root = parse_source(&ctx, src, len, filename, 0);
+    char *expanded = cx_macro_expand(arena, src, len, filename, diags);
+    CxNode *root = parse_source(&ctx, expanded ? expanded : src,
+                                expanded ? strlen(expanded) : len, filename, 0);
 
     if (root) {
         if (ctx.prelude.data)

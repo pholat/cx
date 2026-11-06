@@ -40,8 +40,9 @@ static int write_all(const char *path, const char *data, size_t len) {
 static void usage(void) {
     fprintf(stderr, "Cx %s - C extension transpiler\n\n", CX_VERSION);
     fprintf(stderr, "usage:\n");
-    fprintf(stderr, "  cx build <file.cx|file.hx> [-o <out.c>]\n");
-    fprintf(stderr, "  cx dump  <file.cx|file.hx>\n");
+    fprintf(stderr, "  cx build  <file.cx|file.hx> [-o <out.c>]\n");
+    fprintf(stderr, "  cx expand <file.cx|file.hx>\n");
+    fprintf(stderr, "  cx dump   <file.cx|file.hx>\n");
     fprintf(stderr, "  cx lsp\n");
     fprintf(stderr, "  cx --version\n");
 }
@@ -49,6 +50,29 @@ static void usage(void) {
 static int has_ext(const char *path, const char *ext) {
     size_t n = strlen(path), m = strlen(ext);
     return n >= m && strcmp(path + n - m, ext) == 0;
+}
+
+/* `cx expand <file>`: print the source after `macro_rules!` expansion (useful
+ * for debugging a macro). No semantic checks are run. */
+static int run_expand(const char *in) {
+    size_t len = 0;
+    char *src = read_all(in, &len);
+    if (!src) {
+        fprintf(stderr, "cx: cannot read '%s'\n", in);
+        return 1;
+    }
+
+    CxArena *arena = cx_arena_new();
+    CxDiagList diags;
+    cx_diaglist_init(&diags, in);
+    char *expanded = cx_macro_expand(arena, src, len, in, &diags);
+    fputs(expanded, stdout);
+    int rc = cx_diaglist_has_errors(&diags) ? 1 : 0;
+    cx_diaglist_print(&diags, stderr);
+    cx_diaglist_free(&diags);
+    cx_arena_free(arena);
+    free(src);
+    return rc;
 }
 
 static int run_transpile(const char *in, const char *out, int dump) {
@@ -110,6 +134,13 @@ int main(int argc, char **argv) {
     }
     if (!strcmp(argv[1], "lsp")) {
         return cx_lsp_run();
+    }
+    if (!strcmp(argv[1], "expand")) {
+        if (argc < 3) {
+            usage();
+            return 2;
+        }
+        return run_expand(argv[2]);
     }
     if (!strcmp(argv[1], "dump")) {
         if (argc < 3) {

@@ -7,8 +7,10 @@
 > `goto`, function pointers `T (*name)(params)`, `auto`, multi-word types and
 > `const`, typedefs, multiple declarators, declaration-only headers, Cx-to-Cx
 > `import`, the **`raw { … }` escape hatch**, **`NAME!( … )` macro-invocation
-> passthrough**, and **static traits** (`trait`/`implements`). Still missing:
-> `macro_rules!`/generics (the container layer).
+> passthrough**, **static traits** (`trait`/`implements`), and **`macro_rules!`**
+> (item + expression-position expansion with repetitions and `##`). Still
+> missing: the generics/container layer built *on* macro_rules (`List<T>`,
+> `Map<K,V>`), and some C-preprocessor/expression gaps listed below.
 
 klib (`submodules/klib`) is header-only and macro/pointer based. Writing
 `list.cx` / `map.cx` **without** the C bridge requires the language features
@@ -32,7 +34,7 @@ kh_destroy(32, h);
 | Feature | Notes |
 | :-- | :-- |
 | **`#include` passthrough** `[L][M]` | The lexer currently discards every `#…` line, so klib headers can't be pulled in. |
-| **Macro definition / expansion** `[L][M]` | `KLIST_INIT`, `KHASH_MAP_INIT_INT`, `kh_*`, `kl_*`, `__ac_*` are function-like macros. Cx has no `#define` and no meta-level at all. |
+| **Macro definition / expansion** `[L][M]` | **Cx `macro_rules!` is now implemented** for generative Cx (types + functions, repetitions, `##`); C function-like macros remain available via `NAME!( … )` passthrough. The klib container layer still needs to be written on top. |
 | **Generic/parameterized types** `[L][M]` | klib instantiates a type + functions per element type. Cx needs generics, or must delegate expansion to the C preprocessor. |
 | **Token pasting `##` / stringizing `#`** `[L][M]` | Only if expansion happens in Cx rather than in the C preprocessor. |
 

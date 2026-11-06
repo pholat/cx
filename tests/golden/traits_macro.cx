@@ -1,0 +1,55 @@
+trait Iterable {
+    int len(self);
+    int at(self, int i);
+}
+
+// Generic over anything implementing `Iterable`: the caller passes the object
+// plus the two vtable function pointers, so the helper need not name the
+// generated vtable type.
+int iterable_total(void *obj,
+                   int (*len)(void *),
+                   int (*at)(void *, int)) {
+    int acc = 0;
+    int i = 0;
+    for (i = 0; i < len(obj); i = i + 1) {
+        acc += at(obj, i);
+    }
+    return acc;
+}
+
+// `total!(r)` is an expression macro over the helper. The trait table pointer
+// is the `Iterable` field installed by Row's constructor. (Cx has no postfix
+// call syntax, so the two vtable members are passed as function pointers.)
+macro_rules! total {
+    ($x:expr) => {
+        iterable_total(&($x), ($x).Iterable->len, ($x).Iterable->at)
+    };
+}
+
+namespace demo {
+
+    struct Row {
+        int *cells;
+        int n;
+
+        Row(int *c, int count) {
+            cells = c;
+            n = count;
+        }
+
+        implements Iterable {
+            int len(self) {
+                return self->n;
+            }
+            int at(self, int i) {
+                return self->cells[i];
+            }
+        }
+    };
+
+    int run() {
+        int buf = 0;
+        Row r(&buf, 1);
+        return total!(r);
+    }
+}

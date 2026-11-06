@@ -296,6 +296,16 @@ Still missing for heavy C code (see `examples/klib/REQUIRED_FEATURES.md`):
 casts, `sizeof`, `switch`/`goto`, function pointers, `auto`, and multiple
 translation units.
 
+### 5.2e `macro_rules!` (implemented)
+
+`macro_rules!` definitions are expanded by a token-level pre-parse pass
+(`src/macro.c`) before the Cx parser runs. Definitions produce no C; invocations
+in item, statement or expression position are matched and replaced by the
+transcribed source, then re-parsed. Fragments (`ident`, `ty`, `expr`, `stmt`,
+`tt`, `lit`, `path`, `field`), repetitions (`$( … )*`/`$( … )+`) and `##`
+concatenation are supported. Unknown `NAME!(…)` invocations stay available as
+C-macro passthrough. See `TECHNICAL.md` §4/§7 and `MACRO_RULES.md`.
+
 ### 5.3 Headers (`.hx`)
 
 * Transpile to `.h` with an include guard or `#pragma once`.

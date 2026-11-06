@@ -1,0 +1,45 @@
+// `macro_rules!` generates Cx items (a struct + a function). The `##`
+// operator concatenates the type name with a fixed suffix.
+
+macro_rules! make_vec {
+    ($name:ident, $t:ty) => {
+        struct $name {
+            $t *data;
+            int len;
+        };
+        $t $name##_first($name *v) {
+            return v->data[0];
+        }
+    };
+}
+
+// Repetition, used in expression position.
+macro_rules! add_all {
+    ($($x:expr),*) => {
+        (0 $(+ $x)*)
+    };
+}
+
+// A macro that invokes another macro; expanded over two passes.
+macro_rules! twice {
+    ($x:expr) => {
+        add_all!($x, $x)
+    };
+}
+
+namespace demo {
+
+    make_vec!(IntVec, int);
+
+    int first_of(IntVec *v) {
+        return IntVec_first(v);
+    }
+
+    int sum_three() {
+        return add_all!(1, 2, 3);
+    }
+
+    int sum_twice() {
+        return twice!(7);
+    }
+}

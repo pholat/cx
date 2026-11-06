@@ -1,10 +1,16 @@
 # Cx — Rust-style `macro_rules!` (design)
 
-> Status: **partly implemented**. The C-interop half is done: `raw { … }`
-> verbatim blocks and `NAME!( … )` C macro-invocation passthrough (lexer
-> start-condition capture) — see `TECHNICAL.md` §4. `macro_rules!` itself
-> (definition, matching, expansion) is still **planned / not committed**; the
-> rest of this document is the design sketch for it.
+> Status: **core implemented**. `raw { … }` / `NAME!( … )` C passthrough, and
+> now `macro_rules!` definitions, matching (`$x:frag`, repetitions, `##`) and
+> expansion in item/statement/expression position — see `TECHNICAL.md` §4 and
+> `src/macro.c`. Still **not implemented**: hygienic renaming, LSP macro symbols
+> / expansion preview, and a fully backtracking matcher (fragment capture is
+> currently greedy). The rest of this document is the original design sketch;
+> where it differs from the implementation, `TECHNICAL.md` §4/§7 wins.
+
+The implementation lives in `src/macro.c` and runs as a **textual pre-parse
+pass**: it tokenises into a small token tree, removes definitions, substitutes
+matching invocations, and feeds the result to the normal Cx parser.
 
 ## 1. Motivation
 
@@ -25,7 +31,7 @@ Three complementary mechanisms, in increasing power:
 | :-- | :-- | :-- | :-- |
 | `raw { … }` (verbatim C) + `#include` passthrough | arbitrary C bodies/decls | low | **done** |
 | C function-like macro **invocation** passthrough (`NAME!(…)`) | `KLIST_INIT(...)` etc. | low | **done** (file/statement position) |
-| Cx `macro_rules!` | generative Cx (types + functions) | high | planned |
+| Cx `macro_rules!` | generative Cx (types + functions) | high | **core done** |
 
 `raw {}` and macro-invocation passthrough give the "use C in Cx" story. Cx
 `macro_rules!` gives the generative story (and can back `List<T>`/`Map<K,V>`,
@@ -149,17 +155,24 @@ So the layering can be:
 
 ## 8. Implementation plan (phases)
 
-1. **Balanced token-tree capture** in the scanner (shared with `raw { … }`).
-2. **`macro_rules!` parser** → rule table (patterns, fragment specifiers, arms).
-3. **Matcher**: match a token tree against a pattern arm; produce bindings,
-   including repetition groups.
-4. **Transcriber**: substitute bindings, handle `##` and repetitions, apply
-   hygiene renaming.
-5. **Expansion driver**: recognize `name!( … )` at declaration/statement
-   position; expand; push tokens back to the parser.
-6. **Diagnostics + `cx expand`** and `#line` mapping through expansion.
-7. **LSP**: index macro definitions; definition/hover; (later) expansion preview.
-8. **Stdlib** built with `macro_rules!` (e.g. `List<T>`, `Map<K,V>`, `defer`, …).
+1. **Balanced token-tree capture** — **done** (the expander's own tokenizer; the
+   lexer keeps its separate `RAW`/`MACROCAP`/`ATTR` capture for passthrough).
+2. **`macro_rules!` parser** → rule table (patterns, fragment specifiers, arms) —
+   **done** (`src/macro.c`).
+3. **Matcher**: token tree against a pattern arm; bindings + repetitions —
+   **done** (greedy `expr`/`ty`; no general backtracking).
+4. **Transcriber**: substitute bindings, handle `##` and repetitions; hygiene
+   renaming — **done except hygiene**.
+5. **Expansion driver**: recognize `name!( … )` in item/statement/expression
+   position; expand; re-parse — **done** (textual pre-parse pass; iterative for
+   nested invocations).
+6. **Diagnostics + `cx expand`** — **done** (`cx expand`; errors point at the
+   invocation). `#line` mapping through expansion is approximate (definitions are
+   replaced by blank lines; expansions may shift columns).
+7. **LSP**: index macro definitions; definition/hover; expansion preview — **not
+   done** (definitions are removed before the AST is built).
+8. **Stdlib** built with `macro_rules!` (e.g. `List<T>`, `Map<K,V>`, `defer`, …) —
+   **next** (the klib-backed container layer).
 
 ## 9. Open questions
 

@@ -1,12 +1,15 @@
 # Cx — Generics, traits & attributes (design)
 
-> Status: **partly implemented / under discussion**. Implemented: **static traits**
-> (§4: `trait`/`implements`, static per-type tables, one pointer per trait,
-> conformance checking) and **C interop** (`raw { … }` + `NAME!(…)` invocation
-> passthrough). Still under discussion: attributes (§5) and `macro!` (§6).
-> `macro_rules!` (see [`MACRO_RULES.md`](./MACRO_RULES.md)) was picked mainly
-> because C++-style templates are hard to *read* — not a strong reason by itself.
-> Linked from `TECHNICAL.md` §8.
+> Status: **mostly implemented / some axes under discussion**. Implemented:
+> **static traits** (§4: `trait`/`implements`, static per-type tables, one
+> pointer per trait, conformance checking), **C interop** (`raw { … }` +
+> `NAME!(…)` invocation passthrough), **attributes** (§5), and **`macro!` /
+> `macro_rules!`** (§6: item + expression-position token macros — see
+> [`MACRO_RULES.md`](./MACRO_RULES.md) and `TECHNICAL.md` §4). Still open:
+> template-like generics, `requires trait`, and macro hygiene/LSP indexing.
+> `macro_rules!` was picked partly because C++-style templates are hard to
+> *read*; the direction is being revisited but a container layer can now be
+> built on the implemented macro expander. Linked from `TECHNICAL.md` §8.
 
 ## 1. The problem
 
@@ -185,7 +188,11 @@ Implementation is largely mechanical: attach a list of `(name, args)` to the AST
 node; the emitter/back-end honours the ones it knows and passes others through as
 C attributes/`__attribute__((...))`. The LSP can surface them in hover.
 
-## 6. Sketch: `macro!` (expression macros)
+## 6. `macro!` / `macro_rules!` (implemented core)
+
+> **Implemented**: item `macro_rules!` definitions and invocation in **item,
+> statement and expression** position (the expander is textual, so the result is
+> re-parsed wherever it appears). See `TECHNICAL.md` §4 and `src/macro.c`.
 
 Beyond item `macro_rules!` (`MACRO_RULES.md`), allow invocation in expressions:
 

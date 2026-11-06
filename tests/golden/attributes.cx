@@ -1,0 +1,41 @@
+namespace demo {
+
+    // `#[inline]` -> leading `inline` specifier.
+    #[inline]
+    int add(int a, int b) {
+        return a + b;
+    }
+
+    // `#[packed]` -> `struct demo__Packet { … } __attribute__((packed));`
+    #[packed]
+    struct Packet {
+        char kind;
+        int value;
+    };
+
+    // `#[export("plain_name")]` -> emitted (and called) as a plain C symbol.
+    #[export("plain_name")]
+    int exposed(int x) {
+        return x + 1;
+    }
+
+    void release(void *p) {
+        (void)p;
+    }
+
+    // `#[cleanup(release)]` -> locals get `__attribute__((cleanup(demo__release)))`.
+    #[cleanup(release)]
+    struct Guard {
+        int fd;
+    };
+
+    int use_guard() {
+        Guard g;
+        g.fd = 7;
+        return g.fd;
+    }
+
+    int call_exposed() {
+        return exposed(3);
+    }
+}
