@@ -1,0 +1,57 @@
+// Cx wrapper over klib's intrusive list (submodules/klib/klist.h).
+//
+// klib is macro/pointer based, so the heap storage lives behind an integer
+// handle in the hand-written C bridge (klib_bridge.c). This file exposes a
+// small, namespaced, value-based API on top of it.
+
+// --- C bridge, defined in klib_bridge.c (global scope: unmangled) ----------
+int  kl_list_new();
+void kl_list_free(int handle);
+int  kl_list_size(int handle);
+int  kl_list_empty(int handle);
+void kl_list_push(int handle, int value);
+int  kl_list_get(int handle, int index);
+int  kl_list_shift(int handle, int fallback);
+
+namespace container {
+
+    // A list of ints. Holds only the bridge handle; lifetime is manual
+    // (call list_free), so copies and returns are cheap and safe.
+    struct List {
+        int handle;
+
+        List(int h) {
+            handle = h;
+        }
+    };
+
+    List list_new() {
+        List l(kl_list_new());
+        return l;
+    }
+
+    void list_free(List l) {
+        kl_list_free(l.handle);
+    }
+
+    int list_size(List l) {
+        return kl_list_size(l.handle);
+    }
+
+    int list_is_empty(List l) {
+        return kl_list_empty(l.handle);
+    }
+
+    void list_push(List l, int value) {
+        kl_list_push(l.handle, value);
+    }
+
+    int list_get(List l, int index) {
+        return kl_list_get(l.handle, index);
+    }
+
+    // Removes and returns the front element, or `fallback` when empty.
+    int list_pop(List l, int fallback) {
+        return kl_list_shift(l.handle, fallback);
+    }
+}
