@@ -38,6 +38,9 @@ int cx_lsp_hover(CxBuf *out, const char *uri, const char *text, size_t len,
         } else if (sym->kind == CX_NODE_STRUCT) {
             cx_buf_printf(&md, "struct %s",
                           sym->qualified ? sym->qualified : sym->name);
+        } else if (sym->kind == CX_NODE_TRAIT) {
+            cx_buf_printf(&md, "trait %s",
+                          sym->qualified ? sym->qualified : sym->name);
         } else {
             cx_buf_printf(&md, "%s %s", sym->type ? sym->type : "?",
                           sym->name ? sym->name : "");

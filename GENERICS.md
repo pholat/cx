@@ -1,9 +1,12 @@
 # Cx — Generics, traits & attributes (design)
 
-> Status: **under discussion**. `macro_rules!` (see [`MACRO_RULES.md`](./MACRO_RULES.md))
-> was picked mainly because C++-style templates are hard to *read* — not a strong
-> reason by itself. This doc explores a **traits + attributes**-centric direction
-> and how it relates to macros and templates. Linked from `TECHNICAL.md` §8.
+> Status: **partly implemented / under discussion**. Implemented: **static traits**
+> (§4: `trait`/`implements`, static per-type tables, one pointer per trait,
+> conformance checking) and **C interop** (`raw { … }` + `NAME!(…)` invocation
+> passthrough). Still under discussion: attributes (§5) and `macro!` (§6).
+> `macro_rules!` (see [`MACRO_RULES.md`](./MACRO_RULES.md)) was picked mainly
+> because C++-style templates are hard to *read* — not a strong reason by itself.
+> Linked from `TECHNICAL.md` §8.
 
 ## 1. The problem
 
@@ -41,6 +44,11 @@ C++ `template<…>` is deliberately *not* proposed as syntax — it's the readab
 problem that started this.
 
 ## 4. Traits (static, `implements` inside the struct)
+
+> **Implemented** (see `TECHNICAL.md` §4/§5). The design below matches the
+> lowering; one difference: because a call through the table needs a callee
+> expression and Cx has no postfix-call syntax yet, reach the table via a
+> function-pointer local (`int (*len)(void *) = r.T; len(&r);`).
 
 Cx has **no inheritance and no class vtables**. A trait is a named set of
 required member signatures. A struct opts in with an `implements` block **inside**

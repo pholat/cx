@@ -12,6 +12,7 @@ typedef struct {
 
 void  cx_buf_init(CxBuf *buf);
 void  cx_buf_free(CxBuf *buf);
+void  cx_buf_clear(CxBuf *buf); /* reset length to 0, keep capacity */
 void  cx_buf_putc(CxBuf *buf, char c);
 void  cx_buf_puts(CxBuf *buf, const char *s);
 void  cx_buf_printf(CxBuf *buf, const char *fmt, ...);

@@ -5,8 +5,10 @@
 > assignment, `if`/`else`/`while`/`for`/`break`/`continue`, pointer types,
 > `->`, `[]`, `&`/`*`, casts `(T)expr`, `sizeof`, `switch`/`case`/`default`,
 > `goto`, function pointers `T (*name)(params)`, `auto`, multi-word types and
-> `const`, typedefs, multiple declarators, declaration-only headers, and
-> Cx-to-Cx `import`. Still missing: generics/macros.
+> `const`, typedefs, multiple declarators, declaration-only headers, Cx-to-Cx
+> `import`, the **`raw { … }` escape hatch**, **`NAME!( … )` macro-invocation
+> passthrough**, and **static traits** (`trait`/`implements`). Still missing:
+> `macro_rules!`/generics (the container layer).
 
 klib (`submodules/klib`) is header-only and macro/pointer based. Writing
 `list.cx` / `map.cx` **without** the C bridge requires the language features
@@ -107,10 +109,12 @@ Today Cx has only `return`, blocks and expression statements.
 * **Statement vs declaration in `for` init.** `for (khint_t i = 0; …)` mixes a
   declaration into the initializer.
 
-## 7. Shortcut
+## 7. Shortcut (now available)
 
-A **raw-C escape hatch** — `#include` passthrough plus verbatim C blocks — would
-unlock klib for a fraction of the work above, without implementing pointers,
-subscripting, or control flow in Cx. The current workaround (`klib_bridge.c` +
-`list.cx`/`map.cx`, integer handles) needs none of these features but pushes the
-klib glue into hand-written C.
+The **raw-C escape hatch** is now implemented: `#include` passthrough, verbatim
+`raw { … }` blocks (file scope, struct member, statement), and `NAME!( … )`
+macro-invocation passthrough (e.g. `KLIST_INIT!(IntList, int, 0);` →
+`KLIST_INIT(IntList, int, 0);`). This unlocks klib today without the generics
+layer: put the klib glue in `raw` blocks and call macro-generated functions via
+named invocations. The hand-written bridge (`klib_bridge.c` + `list.cx`/`map.cx`,
+integer handles) still works and needs none of the newer features.

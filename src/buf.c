@@ -18,6 +18,11 @@ void cx_buf_free(CxBuf *b) {
     b->cap = 0;
 }
 
+void cx_buf_clear(CxBuf *b) {
+    b->len = 0;
+    if (b->data) b->data[0] = '\0';
+}
+
 static void buf_reserve(CxBuf *b, size_t extra) {
     if (b->len + extra + 1 <= b->cap) return;
     size_t cap = b->cap ? b->cap : 256;

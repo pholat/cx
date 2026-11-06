@@ -107,6 +107,15 @@ static void walk(BuildCtx *c, CxNode *n, const char *ns, const char *file) {
         break;
     }
 
+    case CX_NODE_TRAIT: {
+        /* A trait is a named set of required member signatures; the node's
+         * children are the TRAIT_METHODs. Codegen and the conformance pass
+         * look it up by name. */
+        CxSymbol *s = symbol_new(c->arena, n, ns, CX_NODE_TRAIT, file);
+        table_push(c->table, s);
+        break;
+    }
+
     case CX_NODE_VAR_DECL: {
         CxSymbol *s = symbol_new(c->arena, n, ns, CX_NODE_VAR_DECL, file);
         table_push(c->table, s);
@@ -139,6 +148,83 @@ static void check_calls(BuildCtx *c, CxNode *n) {
     check_calls(c, n->incr);
     for (int i = 0; i < n->children.len; i++) check_calls(c, n->children.items[i]);
     for (int i = 0; i < n->params.len; i++) check_calls(c, n->params.items[i]);
+}
+
+/* ------------------------------------------------------------- traits */
+
+static CxNode *find_impl_method(CxNode *impl_block, const char *name) {
+    if (!impl_block || !name) return NULL;
+    for (int i = 0; i < impl_block->children.len; i++) {
+        CxNode *m = impl_block->children.items[i];
+        if (m->kind == CX_NODE_IMPL_METHOD && m->name && !strcmp(m->name, name))
+            return m;
+    }
+    return NULL;
+}
+
+static int is_receiver(const CxNode *p) {
+    return p && p->name && strcmp(p->name, "self") == 0;
+}
+
+/* Compare a required trait method with an implementation, ignoring the leading
+ * `self` receiver (whose concrete type differs by design). */
+static int same_signature(CxNode *tm, CxNode *im) {
+    const char *ta = tm->type ? tm->type : "void";
+    const char *tb = im->type ? im->type : "void";
+    if (strcmp(ta, tb) != 0) return 0;
+
+    int ta0 = tm->params.len > 0 && is_receiver(tm->params.items[0]) ? 1 : 0;
+    int ib0 = im->params.len > 0 && is_receiver(im->params.items[0]) ? 1 : 0;
+    if (tm->params.len - ta0 != im->params.len - ib0) return 0;
+    for (int i = 0; i < tm->params.len - ta0; i++) {
+        const char *a = tm->params.items[ta0 + i]->type;
+        const char *b = im->params.items[ib0 + i]->type;
+        if (strcmp(a ? a : "void", b ? b : "void") != 0) return 0;
+    }
+    return 1;
+}
+
+/* Static conformance: every method a trait requires must be present in the
+ * struct's `implements` block with a matching signature. */
+static void check_implements(BuildCtx *c, CxNode *n) {
+    if (!n) return;
+    if (n->kind == CX_NODE_STRUCT) {
+        for (int i = 0; i < n->children.len; i++) {
+            CxNode *m = n->children.items[i];
+            if (m->kind != CX_NODE_IMPLEMENTS) continue;
+            CxSymbol *tr = cx_sema_find_trait(c->table, m->name);
+            if (!tr) {
+                cx_error(c->diags, m->span, "unknown trait '%s'", m->name);
+                continue;
+            }
+            CxNode *decl = tr->decl;
+            for (int k = 0; decl && k < decl->children.len; k++) {
+                CxNode *tm = decl->children.items[k];
+                if (tm->kind != CX_NODE_TRAIT_METHOD) continue;
+                CxNode *im = find_impl_method(m, tm->name);
+                if (!im)
+                    cx_error(c->diags, m->span,
+                             "struct '%s' does not implement '%s' of trait '%s'",
+                             n->name, tm->name, m->name);
+                else if (!same_signature(tm, im))
+                    cx_error(c->diags, im->span,
+                             "signature of '%s' does not match trait '%s'",
+                             tm->name, m->name);
+            }
+        }
+    }
+    check_implements(c, n->lhs);
+    check_implements(c, n->rhs);
+    check_implements(c, n->init);
+    check_implements(c, n->body);
+    check_implements(c, n->cond);
+    check_implements(c, n->then);
+    check_implements(c, n->els);
+    check_implements(c, n->incr);
+    for (int i = 0; i < n->children.len; i++)
+        check_implements(c, n->children.items[i]);
+    for (int i = 0; i < n->params.len; i++)
+        check_implements(c, n->params.items[i]);
 }
 
 /* Infer the type of an initializer for `auto`. */
@@ -198,6 +284,7 @@ CxSymbolTable *cx_sema_build(CxArena *arena, CxNode *tu, CxDiagList *diags) {
         walk(&c, tu->imports.items[i], NULL, tu->imports.items[i]->file);
     infer_auto(&c, tu);
     check_calls(&c, tu);
+    check_implements(&c, tu);
     return table;
 }
 
@@ -225,6 +312,10 @@ CxSymbol *cx_sema_find_struct(const CxSymbolTable *t, const char *name) {
 
 CxSymbol *cx_sema_find_function(const CxSymbolTable *t, const char *name) {
     return find_by_kind(t, name, CX_NODE_FUNCTION);
+}
+
+CxSymbol *cx_sema_find_trait(const CxSymbolTable *t, const char *name) {
+    return find_by_kind(t, name, CX_NODE_TRAIT);
 }
 
 CxSymbol *cx_sema_find_symbol(const CxSymbolTable *t, const char *name) {

@@ -44,12 +44,15 @@ void yyerror(YYLTYPE *locp, CxParseCtx *ctx, void *scanner, const char *msg);
     char   *str;
     CxNode *node;
     CxVec   vec;
+    struct { char *name; char *args; } macro; /* `name!( … )` invocation */
 }
 
 %token <str> IDENT INT_LITERAL STRING_LITERAL TYPE_NAME
+%token <str> RAW
+%token <macro> MACRO
 %token NAMESPACE STRUCT RETURN SCOPE ARROW
 %token IF ELSE WHILE FOR BREAK CONTINUE SIZEOF SWITCH CASE DEFAULT GOTO AUTO
-%token TYPEDEF IMPORT
+%token TYPEDEF IMPORT TRAIT IMPLEMENTS SELF
 %token EQ NE LE GE ANDAND OROR
 %token INC DEC PLUSEQ MINUSEQ STAREQ SLASHEQ PERCENTEQ SHL SHR
 
@@ -57,9 +60,12 @@ void yyerror(YYLTYPE *locp, CxParseCtx *ctx, void *scanner, const char *msg);
 %type <node> destructor_decl constructor_decl function_decl var_decl block stmt
 %type <node> expr_stmt expr param struct_member expr_opt declarator fp_param
 %type <node> typedef_decl one_decl import_decl
+%type <node> raw_block macro_stmt trait_decl trait_member
+%type <node> implements_block impl_member
 %type <str>  type namespace_path
 %type <vec>  struct_members stmt_list param_list arg_list ctor_args fp_param_list
-%type <vec>  one_decl_list
+%type <vec>  one_decl_list trait_members trait_param_list impl_members
+%type <vec>  impl_param_list
 
 %right '=' PLUSEQ MINUSEQ STAREQ SLASHEQ PERCENTEQ
 %left  OROR
@@ -99,6 +105,102 @@ external_decl:
     | import_decl
     | function_decl
     | var_decl
+    | trait_decl
+    | raw_block       /* verbatim C at file scope, e.g. a macro instantiation */
+    | macro_stmt      /* `NAME!( … );` C macro invocation passthrough */
+    ;
+
+/* ------------------------------------------------------------------ C interop */
+
+/* `raw { … }` — verbatim C, emitted unchanged. The lexer captures the body
+ * (balanced braces) and hands it over as the token text. */
+raw_block:
+      RAW
+        { $$ = MK(CX_NODE_RAW, (@$)); $$->name = $1; }
+    ;
+
+/* `NAME!( … );` — a C function-like macro invocation, allowed at file scope and
+ * statement position (not in expressions, for now). The lexer captures the
+ * balanced argument list; codegen emits `NAME(args)` verbatim. This lets macro
+ * arguments be types or generated identifiers (e.g. `KLIST_INIT(IntList, int, 0)`). */
+macro_stmt:
+      MACRO ';'
+        { $$ = MK(CX_NODE_MACRO, (@$)); $$->name = $1.name; $$->type = $1.args; }
+    ;
+
+/* --------------------------------------------------------------------- traits */
+
+trait_decl:
+      TRAIT IDENT '{' trait_members '}' semi_opt
+        { $$ = MK(CX_NODE_TRAIT, (@$)); $$->name = $2; $$->children = $4; }
+    ;
+
+/* A trait (like an `implements` block) needs no trailing `;`; accept one if
+ * written, for consistency with `struct` declarations. */
+semi_opt:
+      %empty
+    | ';'
+    ;
+
+trait_members:
+      %empty
+        { $$ = cx_vec_empty(); }
+    | trait_members trait_member
+        { $$ = $1; cx_vec_push(ctx->arena, &$$, $2); }
+    ;
+
+trait_member:
+      type IDENT '(' trait_param_list ')' ';'
+        { $$ = MK(CX_NODE_TRAIT_METHOD, (@$)); $$->type = $1; $$->name = $2;
+          $$->params = $4; }
+    ;
+
+/* A trait method's first parameter is the receiver, written `self`. It has no
+ * declared type (the concrete type is supplied by the implementing struct). */
+trait_param_list:
+      param_list
+        { $$ = $1; }
+    | SELF
+        { $$ = cx_vec_empty();
+          CxNode *p = MK(CX_NODE_PARAM, (@1)); p->name = "self";
+          cx_vec_push(ctx->arena, &$$, p); }
+    | SELF ',' param_list
+        { $$ = cx_vec_empty();
+          CxNode *p = MK(CX_NODE_PARAM, (@1)); p->name = "self";
+          cx_vec_push(ctx->arena, &$$, p);
+          for (int i = 0; i < $3.len; i++) cx_vec_push(ctx->arena, &$$, $3.items[i]); }
+    ;
+
+implements_block:
+      IMPLEMENTS IDENT '{' impl_members '}'
+        { $$ = MK(CX_NODE_IMPLEMENTS, (@$)); $$->name = $2; $$->children = $4; }
+    ;
+
+impl_members:
+      %empty
+        { $$ = cx_vec_empty(); }
+    | impl_members impl_member
+        { $$ = $1; cx_vec_push(ctx->arena, &$$, $2); }
+    ;
+
+impl_member:
+      type IDENT '(' impl_param_list ')' block
+        { $$ = MK(CX_NODE_IMPL_METHOD, (@$)); $$->type = $1; $$->name = $2;
+          $$->params = $4; $$->body = $6; }
+    ;
+
+impl_param_list:
+      param_list
+        { $$ = $1; }
+    | SELF
+        { $$ = cx_vec_empty();
+          CxNode *p = MK(CX_NODE_PARAM, (@1)); p->name = "self";
+          cx_vec_push(ctx->arena, &$$, p); }
+    | SELF ',' param_list
+        { $$ = cx_vec_empty();
+          CxNode *p = MK(CX_NODE_PARAM, (@1)); p->name = "self";
+          cx_vec_push(ctx->arena, &$$, p);
+          for (int i = 0; i < $3.len; i++) cx_vec_push(ctx->arena, &$$, $3.items[i]); }
     ;
 
 import_decl:
@@ -148,6 +250,8 @@ struct_member:
     | destructor_decl
     | constructor_decl
     | struct_decl          /* nested type: struct Inner { ... }; */
+    | implements_block     /* `implements Trait { … }` */
+    | raw_block            /* verbatim member, e.g. a macro-generated type */
     ;
 
 destructor_decl:
@@ -294,6 +398,8 @@ stmt:
         { $$ = MK(CX_NODE_LABEL, (@$)); $$->name = $1; $$->body = $3; }
     | GOTO IDENT ';'
         { $$ = MK(CX_NODE_GOTO, (@$)); $$->name = $2; }
+    | raw_block
+    | macro_stmt
     ;
 
 expr_stmt:
@@ -304,6 +410,8 @@ expr_stmt:
 expr:
       IDENT
         { $$ = MK(CX_NODE_EXPR_IDENT, (@$)); $$->name = $1; }
+    | SELF /* the receiver, usable inside `implements` method bodies */
+        { $$ = MK(CX_NODE_EXPR_IDENT, (@$)); $$->name = "self"; }
     | INT_LITERAL
         { $$ = MK(CX_NODE_EXPR_INT, (@$)); $$->name = $1; }
     | STRING_LITERAL

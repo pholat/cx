@@ -9,6 +9,7 @@ typedef struct {
     const CxSymbolTable *sema;
     const char          *file;
     int                  indent;
+    int                  header;      /* declaration-only (.hx) output */
     const CxNode        *self_struct; /* set while emitting a destructor body */
 } Emit;
 
@@ -96,6 +97,24 @@ static void emit_decl(Emit *e, CxNode *n) {
     emit_declarator(e, n->type, n);
 }
 
+/* Emit a `raw { … }` body verbatim (first line indented, the rest kept as
+ * written). A trailing newline is ensured so following output starts cleanly. */
+static void emit_raw(Emit *e, const char *text) {
+    if (!text) return;
+    ind(e);
+    cx_buf_puts(e->out, text);
+    size_t n = strlen(text);
+    if (n == 0 || text[n - 1] != '\n') cx_buf_putc(e->out, '\n');
+}
+
+/* Emit `NAME(args)` for a C macro invocation passthrough (args are verbatim). */
+static void emit_macro_call(Emit *e, CxNode *n) {
+    cx_buf_puts(e->out, n->name ? n->name : "");
+    cx_buf_putc(e->out, '(');
+    if (n->type) cx_buf_puts(e->out, n->type);
+    cx_buf_putc(e->out, ')');
+}
+
 static int struct_has_field(const CxNode *s, const char *name) {
     if (!s || !name) return 0;
     for (int i = 0; i < s->children.len; i++) {
@@ -112,6 +131,9 @@ static int struct_has_field(const CxNode *s, const char *name) {
 static void emit_expr(Emit *e, CxNode *n) {
     if (!n) return;
     switch (n->kind) {
+    case CX_NODE_MACRO:
+        emit_macro_call(e, n);
+        break;
     case CX_NODE_EXPR_IDENT:
         if (e->self_struct && struct_has_field(e->self_struct, n->name)) {
             cx_buf_printf(e->out, "self->%s", n->name);
@@ -204,6 +226,187 @@ static void emit_stmt(Emit *e, CxNode *n);
 static void emit_var_decl(Emit *e, CxNode *n, int is_local);
 static void emit_branch(Emit *e, CxNode *n);
 
+/* ---------------------------------------------------------------- traits */
+
+static int is_receiver(const CxNode *p) {
+    return p && p->name && strcmp(p->name, "self") == 0;
+}
+
+static int struct_has_implements(const CxNode *s) {
+    for (int i = 0; s && i < s->children.len; i++)
+        if (s->children.items[i]->kind == CX_NODE_IMPLEMENTS) return 1;
+    return 0;
+}
+
+/* `struct <Trait>__vtable { ret (*m)(params); … };` — one static table type per
+ * trait, shared by every implementing struct. */
+static void emit_vtable_struct(Emit *e, CxNode *trait, const char *ns) {
+    char *tm = cx_mangle(e->arena, ns, trait->name);
+    cx_emit_line(e->out, trait->span.first_line, e->file);
+    ind(e);
+    cx_buf_printf(e->out, "struct %s__vtable {\n", tm);
+    e->indent++;
+    for (int i = 0; i < trait->children.len; i++) {
+        CxNode *m = trait->children.items[i];
+        if (m->kind != CX_NODE_TRAIT_METHOD) continue;
+        ind(e);
+        emit_type(e, m->type);
+        cx_buf_printf(e->out, " (*%s)(", m->name);
+        if (m->params.len == 0) {
+            cx_buf_puts(e->out, "void");
+        } else {
+            for (int k = 0; k < m->params.len; k++) {
+                CxNode *p = m->params.items[k];
+                if (k) cx_buf_puts(e->out, ", ");
+                if (is_receiver(p)) cx_buf_puts(e->out, "void *");
+                else emit_type(e, p->type);
+            }
+        }
+        cx_buf_puts(e->out, ");\n");
+    }
+    e->indent--;
+    ind(e);
+    cx_buf_puts(e->out, "};\n\n");
+}
+
+/* Signature of `Struct__Trait__method`; the receiver becomes `void *self_`. */
+static void emit_impl_sig(Emit *e, CxNode *s, const char *ns,
+                          const char *trait_name, CxNode *m, int proto) {
+    char *sm = cx_mangle(e->arena, ns, s->name);
+    cx_buf_puts(e->out, "static ");
+    emit_type(e, m->type);
+    cx_buf_printf(e->out, " %s__%s__%s(", sm, trait_name, m->name);
+    if (m->params.len == 0) {
+        cx_buf_puts(e->out, "void");
+    } else {
+        for (int i = 0; i < m->params.len; i++) {
+            CxNode *p = m->params.items[i];
+            if (i) cx_buf_puts(e->out, ", ");
+            if (is_receiver(p)) {
+                cx_buf_puts(e->out, "void *self_");
+            } else {
+                emit_type(e, p->type);
+                cx_buf_putc(e->out, ' ');
+                cx_buf_puts(e->out, p->name ? p->name : "");
+            }
+        }
+    }
+    cx_buf_putc(e->out, ')');
+    cx_buf_puts(e->out, proto ? ";\n" : "\n");
+}
+
+static void emit_impl_method(Emit *e, CxNode *s, const char *ns,
+                             const char *trait_name, CxNode *m) {
+    cx_emit_line(e->out, m->span.first_line, e->file);
+    ind(e);
+    emit_impl_sig(e, s, ns, trait_name, m, 0);
+
+    const CxNode *saved = e->self_struct;
+    e->self_struct = s;
+    cx_buf_puts(e->out, "{\n");
+    e->indent++;
+    if (m->params.len > 0 && is_receiver(m->params.items[0])) {
+        char *sm = cx_mangle(e->arena, ns, s->name);
+        ind(e);
+        cx_buf_printf(e->out, "struct %s *self = self_; (void)self;\n", sm);
+    }
+    for (int i = 0; m->body && i < m->body->children.len; i++)
+        emit_stmt(e, m->body->children.items[i]);
+    e->indent--;
+    ind(e);
+    cx_buf_puts(e->out, "}\n\n");
+    e->self_struct = saved;
+}
+
+/* `static const struct <Trait>__vtable <Struct>__<Trait>__table = { … };` */
+static void emit_vtable(Emit *e, CxNode *s, const char *ns, CxSymbol *trait) {
+    char *sm = cx_mangle(e->arena, ns, s->name);
+    char *tm = cx_mangle(e->arena, trait->ns, trait->name);
+    cx_buf_printf(e->out, "static const struct %s__vtable %s__%s__table = {\n",
+                  tm, sm, trait->name);
+    e->indent++;
+    CxNode *decl = trait->decl;
+    for (int i = 0; decl && i < decl->children.len; i++) {
+        CxNode *m = decl->children.items[i];
+        if (m->kind != CX_NODE_TRAIT_METHOD) continue;
+        ind(e);
+        cx_buf_printf(e->out, "%s__%s__%s,\n", sm, trait->name, m->name);
+    }
+    e->indent--;
+    ind(e);
+    cx_buf_puts(e->out, "};\n\n");
+}
+
+static void emit_impl_protos(Emit *e, CxNode *s, const char *ns) {
+    for (int i = 0; i < s->children.len; i++) {
+        CxNode *imp = s->children.items[i];
+        if (imp->kind != CX_NODE_IMPLEMENTS) continue;
+        for (int k = 0; k < imp->children.len; k++) {
+            CxNode *m = imp->children.items[k];
+            if (m->kind != CX_NODE_IMPL_METHOD) continue;
+            ind(e);
+            emit_impl_sig(e, s, ns, imp->name, m, 1);
+        }
+    }
+}
+
+static void emit_impl_defs(Emit *e, CxNode *s, const char *ns) {
+    for (int i = 0; i < s->children.len; i++) {
+        CxNode *imp = s->children.items[i];
+        if (imp->kind != CX_NODE_IMPLEMENTS) continue;
+        for (int k = 0; k < imp->children.len; k++) {
+            CxNode *m = imp->children.items[k];
+            if (m->kind != CX_NODE_IMPL_METHOD) continue;
+            emit_impl_method(e, s, ns, imp->name, m);
+        }
+        CxSymbol *tr = cx_sema_find_trait(e->sema, imp->name);
+        if (tr) emit_vtable(e, s, ns, tr);
+    }
+}
+
+/* `self->Trait = &Struct__Trait__table;` (used inside constructors). */
+static void emit_trait_installs_self(Emit *e, CxNode *s, const char *ns) {
+    for (int i = 0; i < s->children.len; i++) {
+        CxNode *m = s->children.items[i];
+        if (m->kind != CX_NODE_IMPLEMENTS) continue;
+        CxSymbol *tr = cx_sema_find_trait(e->sema, m->name);
+        if (!tr) continue;
+        char *sm = cx_mangle(e->arena, ns, s->name);
+        ind(e);
+        cx_buf_printf(e->out, "self->%s = &%s__%s__table;\n", tr->name, sm,
+                      tr->name);
+    }
+}
+
+/* `var.Trait = &Struct__Trait__table;` after a default local declaration. */
+static void emit_trait_installs_var(Emit *e, CxNode *s, const char *ns,
+                                    const char *var) {
+    for (int i = 0; i < s->children.len; i++) {
+        CxNode *m = s->children.items[i];
+        if (m->kind != CX_NODE_IMPLEMENTS) continue;
+        CxSymbol *tr = cx_sema_find_trait(e->sema, m->name);
+        if (!tr) continue;
+        char *sm = cx_mangle(e->arena, ns, s->name);
+        ind(e);
+        cx_buf_printf(e->out, "%s.%s = &%s__%s__table;\n", var, tr->name, sm,
+                      tr->name);
+    }
+}
+
+/* `= { .Trait = &Struct__Trait__table, … }` for a global default declaration. */
+static void emit_trait_global_init(Emit *e, CxNode *s, const char *ns) {
+    cx_buf_puts(e->out, " = {");
+    for (int i = 0; i < s->children.len; i++) {
+        CxNode *m = s->children.items[i];
+        if (m->kind != CX_NODE_IMPLEMENTS) continue;
+        CxSymbol *tr = cx_sema_find_trait(e->sema, m->name);
+        if (!tr) continue;
+        char *sm = cx_mangle(e->arena, ns, s->name);
+        cx_buf_printf(e->out, " .%s = &%s__%s__table,", tr->name, sm, tr->name);
+    }
+    cx_buf_puts(e->out, " }");
+}
+
 /* A constructor call is any call whose callee names a struct that has a ctor. */
 static int is_ctor_init(Emit *e, CxNode *init) {
     if (!init || init->kind != CX_NODE_EXPR_CALL || !init->name) return 0;
@@ -212,6 +415,11 @@ static int is_ctor_init(Emit *e, CxNode *init) {
 }
 
 static void emit_var_decl(Emit *e, CxNode *n, int is_local) {
+    int ptr = 0;
+    CxSymbol *st = struct_of(e, n->type, &ptr);
+    CxNode *st_node = (st && st->kind == CX_NODE_STRUCT) ? st->decl : NULL;
+    int traits = (!ptr && st_node && struct_has_implements(st_node));
+
     for (int k = 0; k < n->children.len; k++) {
         CxNode *d = n->children.items[k];
         int ctor = is_ctor_init(e, d->init);
@@ -228,6 +436,10 @@ static void emit_var_decl(Emit *e, CxNode *n, int is_local) {
         if (d->init && !ctor) {
             cx_buf_puts(e->out, " = ");
             emit_expr(e, d->init);
+        } else if (!is_local && !ctor && !d->init && traits) {
+            /* A global has no place for a statement, so install the trait tables
+             * with a designated initializer (other fields become zero). */
+            emit_trait_global_init(e, st_node, st->ns);
         }
         cx_buf_puts(e->out, ";\n");
 
@@ -246,6 +458,10 @@ static void emit_var_decl(Emit *e, CxNode *n, int is_local) {
             cx_buf_printf(e->out,
                           "/* constructor call for '%s' ignored at file scope */\n",
                           d->name);
+        } else if (is_local && traits) {
+            /* `T v;` does not call a constructor, so install the trait tables
+             * (the vtable pointers) explicitly. */
+            emit_trait_installs_var(e, st_node, st->ns, d->name);
         }
     }
 }
@@ -276,6 +492,14 @@ static void emit_stmt(Emit *e, CxNode *n) {
         break;
     case CX_NODE_EMPTY:
         ind(e);
+        cx_buf_puts(e->out, ";\n");
+        break;
+    case CX_NODE_RAW:
+        emit_raw(e, n->name);
+        break;
+    case CX_NODE_MACRO:
+        ind(e);
+        emit_macro_call(e, n);
         cx_buf_puts(e->out, ";\n");
         break;
     case CX_NODE_IF:
@@ -401,12 +625,26 @@ static void emit_struct_def(Emit *e, CxNode *n, const char *ns) {
     e->indent++;
     for (int i = 0; i < n->children.len; i++) {
         CxNode *m = n->children.items[i];
+        if (m->kind == CX_NODE_RAW) {
+            emit_raw(e, m->name); /* verbatim member (e.g. a macro-typed field) */
+            continue;
+        }
         if (m->kind != CX_NODE_VAR_DECL) continue;
         for (int k = 0; k < m->children.len; k++) {
             ind(e);
             emit_declarator(e, m->type, m->children.items[k]);
             cx_buf_puts(e->out, ";\n");
         }
+    }
+    /* One vtable pointer per implemented trait. */
+    for (int i = 0; i < n->children.len; i++) {
+        CxNode *m = n->children.items[i];
+        if (m->kind != CX_NODE_IMPLEMENTS) continue;
+        CxSymbol *tr = cx_sema_find_trait(e->sema, m->name);
+        if (!tr) continue;
+        char *tm = cx_mangle(e->arena, tr->ns, tr->name);
+        ind(e);
+        cx_buf_printf(e->out, "const struct %s__vtable *%s;\n", tm, tr->name);
     }
     e->indent--;
     ind(e);
@@ -513,6 +751,7 @@ static void emit_ctor_helper(Emit *e, CxNode *s, const char *ns) {
     cx_buf_puts(e->out, "{\n");
     e->indent++;
     emit_member_ctor_calls(e, s); /* members are constructed before the body */
+    emit_trait_installs_self(e, s, ns); /* install trait vtables on `self` */
     for (int i = 0; ctor->body && i < ctor->body->children.len; i++)
         emit_stmt(e, ctor->body->children.items[i]);
     e->indent--;
@@ -545,7 +784,9 @@ static void emit_struct_pass(Emit *e, CxNode *s, const char *ns, int phase) {
     if (phase == 2) {
         emit_ctor_proto(e, s, ns);
         emit_dtor_proto(e, s, ns);
+        if (!e->header) emit_impl_protos(e, s, ns); /* static: .c only */
     } else {
+        emit_impl_defs(e, s, ns); /* methods + static tables, before ctors */
         emit_dtor_helper(e, s, ns);
         emit_ctor_helper(e, s, ns);
     }
@@ -556,10 +797,11 @@ static void emit_struct_pass(Emit *e, CxNode *s, const char *ns, int phase) {
     }
 }
 
-/* Four passes so the emitted C has a valid dependency order:
- *   1. struct definitions             (complete types first)
- *   2. function + constructor protos  (may return/accept structs by value)
- *   3. destructor + constructor impls (call functions through the protos)
+/* Five passes so the emitted C has a valid dependency order:
+ *   0. preamble: trait vtable types, raw blocks, C macro invocations
+ *   1. struct definitions + typedefs  (complete types first)
+ *   2. function/ctor/dtor/impl protos (may return/accept structs by value)
+ *   3. dtor/ctor + impl methods + vtables (tables before ctors install them)
  *   4. function bodies + globals      (use ctors/dtors)
  */
 static void walk(Emit *e, CxNode *node, const char *ns, int phase) {
@@ -578,6 +820,19 @@ static void walk(Emit *e, CxNode *node, const char *ns, int phase) {
     }
 
     switch (phase) {
+    case 0:
+        /* Preamble: trait vtable types, verbatim `raw` blocks, and C macro
+         * instantiations — everything a later struct/function may depend on. */
+        if (node->kind == CX_NODE_TRAIT) {
+            emit_vtable_struct(e, node, ns);
+        } else if (node->kind == CX_NODE_RAW) {
+            emit_raw(e, node->name);
+        } else if (node->kind == CX_NODE_MACRO) {
+            ind(e);
+            emit_macro_call(e, node);
+            cx_buf_puts(e->out, ";\n");
+        }
+        break;
     case 1:
         if (node->kind == CX_NODE_STRUCT) {
             emit_struct_pass(e, node, ns, 1);
@@ -644,6 +899,7 @@ void cx_emit_c(CxArena *arena, CxBuf *out, CxNode *tu,
     e.sema = sema;
     e.file = file;
     e.indent = 0;
+    e.header = 0;
     e.self_struct = NULL;
 
     cx_buf_printf(out, "/* Generated by cx %s from %s. Do not edit. */\n\n",
@@ -657,6 +913,8 @@ void cx_emit_c(CxArena *arena, CxBuf *out, CxNode *tu,
 
     cx_emit_line(out, 1, file);
 
+    walk(&e, tu, NULL, 0);
+    cx_buf_puts(out, "\n");
     walk(&e, tu, NULL, 1);
     cx_buf_puts(out, "\n");
     walk(&e, tu, NULL, 2);
@@ -679,6 +937,7 @@ void cx_emit_h(CxArena *arena, CxBuf *out, CxNode *tu,
     e.sema = sema;
     e.file = file;
     e.indent = 0;
+    e.header = 1;
     e.self_struct = NULL;
 
     /* Guard name: basename (no directory), uppercase, non-alnum -> '_'. */
@@ -702,6 +961,8 @@ void cx_emit_h(CxArena *arena, CxBuf *out, CxNode *tu,
     cx_buf_printf(out, "#ifndef %s\n#define %s\n\n", guard.data, guard.data);
 
     cx_emit_line(out, 1, file);
+    walk(&e, tu, NULL, 0); /* trait vtable types + raw/macro preamble */
+    cx_buf_puts(out, "\n");
     walk(&e, tu, NULL, 1); /* typedefs + struct definitions */
     cx_buf_puts(out, "\n");
     walk(&e, tu, NULL, 2); /* functions + ctor/dtor prototypes */

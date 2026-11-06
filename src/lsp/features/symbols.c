@@ -81,6 +81,17 @@ static void emit_symbols_array(CxBuf *out, CxNode *container) {
             cx_buf_puts(out, ",\"selectionRange\":");
             cx_lsp_write_range(out, n->span);
             cx_buf_putc(out, '}');
+        } else if (n->kind == CX_NODE_TRAIT) {
+            /* SymbolKind: Interface = 11. */
+            if (!first) cx_buf_putc(out, ',');
+            first = 0;
+            cx_buf_puts(out, "{\"name\":");
+            cx_json_write_string(out, n->name);
+            cx_buf_puts(out, ",\"kind\":11,\"range\":");
+            cx_lsp_write_range(out, n->span);
+            cx_buf_puts(out, ",\"selectionRange\":");
+            cx_lsp_write_range(out, n->span);
+            cx_buf_putc(out, '}');
         } else if (n->kind == CX_NODE_VAR_DECL) {
             for (int k = 0; k < n->children.len; k++) {
                 CxNode *d = n->children.items[k];

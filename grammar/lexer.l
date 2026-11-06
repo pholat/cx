@@ -38,7 +38,17 @@
 
 %option reentrant bison-bridge bison-locations
 %option noyywrap
+%option noinput nounput
 %option extra-type="CxParseCtx *"
+
+/* Start conditions for verbatim capture (the rules that switch into them are
+ * annotated in the rules section): RAWCAP copies a balanced-brace body to
+ * ctx->raw; MACROCAP copies a balanced-paren argument list to ctx->macro_args.
+ * NB: these names must not collide with the Bison token names `RAW`/`MACRO`,
+ * since Flex emits `#define RAWCAP 1` / `#define MACROCAP 2` which would
+ * otherwise shadow `return RAW;` / `return MACRO;`. */
+%x RAWCAP
+%x MACROCAP
 
 DIGIT   [0-9]
 IDENT   [A-Za-z_][A-Za-z0-9_]*
@@ -68,6 +78,65 @@ IDENT   [A-Za-z_][A-Za-z0-9_]*
 "case"          { return CASE; }
 "default"       { return DEFAULT; }
 "goto"          { return GOTO; }
+"trait"         { return TRAIT; }
+"implements"    { return IMPLEMENTS; }
+"self"          { return SELF; }
+
+"raw"[ \t\r\n]*"{"  {
+    CxParseCtx *c = yyget_extra(yyscanner);
+    c->raw_line = yylloc->first_line;
+    c->raw_col = yylloc->first_column;
+    c->raw_depth = 1;
+    cx_buf_clear(&c->raw);
+    BEGIN(RAWCAP);
+}
+
+{IDENT}"!"[ \t\r\n]*"("  {
+    CxParseCtx *c = yyget_extra(yyscanner);
+    int n = 0;
+    while (n < yyleng && yytext[n] != '!') n++;
+    c->macro_name = cx_arena_strndup(c->arena, yytext, (size_t)n);
+    c->macro_line = yylloc->first_line;
+    c->macro_col = yylloc->first_column;
+    c->macro_depth = 1;
+    cx_buf_clear(&c->macro_args);
+    BEGIN(MACROCAP);
+}
+
+<RAWCAP>"{"                    { CxParseCtx *c = yyget_extra(yyscanner); c->raw_depth++; cx_buf_putc(&c->raw, '{'); }
+<RAWCAP>"}"                    {
+    CxParseCtx *c = yyget_extra(yyscanner);
+    if (--c->raw_depth == 0) {
+        BEGIN(INITIAL);
+        yylval->str = cx_arena_strndup(c->arena, c->raw.data ? c->raw.data : "", c->raw.len);
+        yylloc->first_line = c->raw_line;
+        yylloc->first_column = c->raw_col;
+        return RAW;
+    }
+    cx_buf_putc(&c->raw, '}');
+}
+<RAWCAP>[^{}\n]+               { cx_buf_puts(&yyget_extra(yyscanner)->raw, yytext); }
+<RAWCAP>\n                     { cx_buf_putc(&yyget_extra(yyscanner)->raw, '\n'); }
+<RAWCAP><<EOF>>                { BEGIN(INITIAL); return 0; }
+
+<MACROCAP>"("                  { CxParseCtx *c = yyget_extra(yyscanner); c->macro_depth++; cx_buf_putc(&c->macro_args, '('); }
+<MACROCAP>")"                  {
+    CxParseCtx *c = yyget_extra(yyscanner);
+    if (--c->macro_depth == 0) {
+        BEGIN(INITIAL);
+        yylval->macro.name = c->macro_name;
+        yylval->macro.args = cx_arena_strndup(c->arena, c->macro_args.data ? c->macro_args.data : "", c->macro_args.len);
+        yylloc->first_line = c->macro_line;
+        yylloc->first_column = c->macro_col;
+        return MACRO;
+    }
+    cx_buf_putc(&c->macro_args, ')');
+}
+<MACROCAP>\"(\\.|[^"\\])*\"     { cx_buf_puts(&yyget_extra(yyscanner)->macro_args, yytext); }
+<MACROCAP>[^()"\n]+             { cx_buf_puts(&yyget_extra(yyscanner)->macro_args, yytext); }
+<MACROCAP>\n                   { cx_buf_putc(&yyget_extra(yyscanner)->macro_args, '\n'); }
+<MACROCAP>.                    { cx_buf_putc(&yyget_extra(yyscanner)->macro_args, yytext[0]); }
+<MACROCAP><<EOF>>              { BEGIN(INITIAL); return 0; }
 
 {DIGIT}+                    { yylval->str = cx_arena_strndup(yyget_extra(yyscanner)->arena, yytext, (size_t)yyleng); return INT_LITERAL; }
 \"(\\.|[^"\\])*\"           { yylval->str = cx_arena_strndup(yyget_extra(yyscanner)->arena, yytext, (size_t)yyleng); return STRING_LITERAL; }
@@ -226,6 +295,8 @@ CxNode *cx_parse(CxArena *arena, const char *src, size_t len,
     ctx.line = 1;
     ctx.column = 1;
     cx_buf_init(&ctx.prelude);
+    cx_buf_init(&ctx.raw);
+    cx_buf_init(&ctx.macro_args);
 
     static const char *builtin_types[] = {
         "void", "char", "short", "int", "long", "float", "double",
@@ -243,6 +314,8 @@ CxNode *cx_parse(CxArena *arena, const char *src, size_t len,
         root->imports = ctx.imports;
     }
     cx_buf_free(&ctx.prelude);
+    cx_buf_free(&ctx.raw);
+    cx_buf_free(&ctx.macro_args);
     cx_typeset_free(&ctx.types);
     free(ctx.active);
     return root;

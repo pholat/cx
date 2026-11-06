@@ -57,6 +57,12 @@ typedef enum {
     CX_NODE_LABEL,
     CX_NODE_GOTO,
     CX_NODE_TYPEDEF,
+    CX_NODE_RAW,          /* `raw { … }`: verbatim C in name, emitted as-is */
+    CX_NODE_MACRO,        /* `name!(args)`: name=macro, type=verbatim arg text */
+    CX_NODE_TRAIT,        /* `trait T { … };`: children are TRAIT_METHODs */
+    CX_NODE_TRAIT_METHOD, /* required method signature (type/name/params) */
+    CX_NODE_IMPLEMENTS,   /* `implements T { … }` inside a struct */
+    CX_NODE_IMPL_METHOD,  /* method body provided by an implements block */
     CX_NODE_ERROR
 } CxNodeKind;
 

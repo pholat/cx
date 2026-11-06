@@ -1,0 +1,44 @@
+trait Iterable {
+    int len(self);
+    int at(self, int i);
+}
+
+namespace demo {
+
+    struct Row {
+        int *cells;
+        int n;
+
+        Row(int *c, int count) {
+            cells = c;
+            n = count;
+        }
+
+        implements Iterable {
+            int len(self) {
+                return self->n;
+            }
+            int at(self, int i) {
+                return self->cells[i];
+            }
+        }
+    };
+
+    // Reach the trait through the installed static vtable (`r.Iterable`).
+    int total(Row r) {
+        int (*len)(void *) = r.Iterable->len;
+        int (*at)(void *, int) = r.Iterable->at;
+        int t = 0;
+        int i = 0;
+        for (i = 0; i < len(&r); i = i + 1) {
+            t += at(&r, i);
+        }
+        return t;
+    }
+
+    int run() {
+        int buf = 0;
+        Row r(&buf, 1);
+        return total(r);
+    }
+}

@@ -45,14 +45,15 @@ int cx_lsp_completion(CxBuf *out, const char *uri, const char *text, size_t len,
         int kind = 6; /* Variable */
         if (s->kind == CX_NODE_FUNCTION) kind = 3;
         else if (s->kind == CX_NODE_STRUCT) kind = 22;
+        else if (s->kind == CX_NODE_TRAIT) kind = 8; /* Interface */
         add_item(out, &count, s->name, kind, s->type);
     }
 
     static const char *keywords[] = {
         "if", "else", "while", "for", "switch", "case", "default", "break",
         "continue", "return", "goto", "namespace", "struct", "typedef", "import",
-        "raw", "auto", "sizeof", "const", "void", "int", "char", "long",
-        "unsigned", NULL};
+        "trait", "implements", "self", "raw", "auto", "sizeof", "const", "void",
+        "int", "char", "long", "unsigned", NULL};
     for (int i = 0; keywords[i]; i++) {
         if (plen && strncmp(keywords[i], prefix, plen) != 0) continue;
         add_item(out, &count, keywords[i], 14, NULL);

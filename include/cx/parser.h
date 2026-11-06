@@ -33,6 +33,15 @@ typedef struct CxParseCtx {
     int         column;    /* current 1-based lexer column */
     CxSpan      last_span; /* last token location */
     CxBuf       prelude;   /* verbatim preprocessor lines (#include, #define) */
+    CxBuf       raw;       /* in-progress `raw { … }` capture (balanced braces) */
+    int         raw_depth; /* open-brace depth while capturing a raw block */
+    int         raw_line;  /* start of the current raw block (for its span) */
+    int         raw_col;
+    CxBuf       macro_args;/* in-progress `name!( … )` argument capture */
+    char       *macro_name;/* identifier of the current macro invocation */
+    int         macro_depth;/* open-paren depth while capturing macro args */
+    int         macro_line;/* start of the current macro invocation */
+    int         macro_col;
     CxTypeSet   types;     /* known type names for the lexer */
     CxVec       imports;   /* imported TU roots (declarations to merge) */
     const char **active;   /* import paths currently in progress (cycle guard) */

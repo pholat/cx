@@ -138,7 +138,6 @@ the old binary in memory.
   constructor call, literal, paren, cast, or a known symbol's type).
 * A bare identifier that names a function is emitted with its mangled name, so
   Cx functions can be passed as callbacks.
-* Multi-word types (`unsigned int`, `long long`) are **not** supported.
 
 ### Expressions
 `+ - * / %`, comparisons `== != < > <= >=`, logical `&& || !`, bitwise
@@ -155,6 +154,40 @@ Expression statements, `return`, blocks, `if`/`else`, `while`,
 ### Preprocessor
 Lines beginning with `#` (`#include`, `#define`, …) are captured and emitted
 verbatim at the top of the generated C.
+
+### C interop
+
+* `raw { … }` — a verbatim C block, captured with balanced braces and emitted
+  unchanged. Allowed at file scope, as a struct member, and as a statement. Use
+  it for macro-generated types (`klist_t(IntList)`), instantiations, or any C
+  the Cx parser cannot read.
+* `NAME!(args);` — a C function-like macro **invocation** passthrough, allowed at
+  file scope and statement position (not in expressions yet). The lexer captures
+  the balanced argument list verbatim (types and `##`-generated names are fine)
+  and codegen emits `NAME(args)`, e.g. `KLIST_INIT!(IntList, int, 0);` lowers to
+  `KLIST_INIT(IntList, int, 0);`. Without a trailing `!(…)`, `NAME` stays a
+  normal identifier.
+
+### Traits (static)
+
+* `trait T { <ret> m(self, …); … };` declares a named set of required member
+  signatures. The receiver is the `self` parameter; its type is supplied by the
+  implementing struct.
+* A struct opts in with an `implements T { <methods> }` block. Each method
+  lowers to a `static` function `Struct__Trait__method(void *self_, …)` that
+  casts `self_` back to the concrete struct.
+* Each trait gets one `struct T__vtable` of function pointers; each implementing
+  struct gets a `static const` per-type table and **one pointer field per
+  trait** (`const struct T__vtable *T;`, field name = trait name).
+* The pointer is installed by the constructor, or — for a default-constructed
+  local `T v;` — by an assignment emitted right after the declaration. Globals
+  use a designated initializer. (Consistent with RAII: `T v;` does not call a
+  ctor.)
+* Conformance is **explicit and static**: sema checks that every required method
+  is present with a matching signature (the `self` receiver is ignored in the
+  comparison). No structural/duck typing, no inheritance, no class vtables.
+* There is no postfix-call syntax yet, so reaching the table uses a
+  function-pointer local: `int (*len)(void *) = r.T; len(&r);`.
 
 ### Headers and imports
 `cx build foo.hx -o foo.h` emits a **declaration-only** header: an include guard,
@@ -178,6 +211,9 @@ and skips duplicate declarations) is not implemented yet.
 | `struct Foo` in `ns` | `struct ns__Foo` |
 | nested `Outer::Inner` | `Outer__Inner` |
 | `~Foo()` / `Foo()` in `ns` | `ns__Foo__dtor` / `ns__Foo__ctor` |
+| `implements T` method `m` in `Foo` | `Foo__T__m` (static) |
+| per-type trait table | `Foo__T__table` (static const) |
+| trait vtable type `trait T` | `struct T__vtable` |
 
 `__` is the reserved separator.
 
@@ -185,14 +221,19 @@ and skips duplicate declarations) is not implemented yet.
 
 ## 5. Code generation
 
-`src/codegen/c_emitter.c` emits a translation unit in **four passes** so the
+`src/codegen/c_emitter.c` emits a translation unit in **five passes** so the
 dependency order is valid C:
 
+0. **preamble** — trait vtable types (`struct T__vtable`), verbatim `raw { … }`
+   blocks, and C macro invocations (anything a later struct/function depends on);
 1. **struct definitions** (nested types first — the embedder needs a complete
-   type);
+   type) and typedefs;
 2. **function + constructor + destructor prototypes** (so struct-by-value
-   returns/params are valid, and a dtor can call an embedded dtor defined later);
-3. **destructor + constructor helpers**;
+   returns/params are valid, and a dtor can call an embedded dtor defined later),
+   plus impl-method prototypes in `.c` output;
+3. **destructor + constructor helpers**, preceded by impl methods and their
+   `static const` vtables (the constructor installs the table pointers, so the
+   tables must be defined first);
 4. **function bodies + globals**.
 
 Details:
@@ -204,7 +245,15 @@ Details:
   errors and GDB map back to the Cx source.
 * Destructor helpers have **external linkage** (`void T__dtor(struct T *)`), so a
   generated header can declare them and a consumer TU can link the `.c`.
-* Headers use `cx_emit_h` (phases 1–2 only) wrapped in an include guard.
+* Headers use `cx_emit_h` (phases 0–2) wrapped in an include guard. The vtable
+  *types* and the struct's trait pointer fields are declared, but the `static`
+  impl methods/tables are `.c`-only (a consumer TU only needs the layout + the
+  vtable type to call through the pointer).
+* `raw { … }` is emitted verbatim (first line indented; the rest kept as
+  written). A top-level `raw`/macro line goes in phase 0.
+* In an `implements` method body the receiver is a local
+  `struct T *self = self_; (void)self;`, so `self->field` and bare field names
+  both resolve.
 * File-scope constructor calls are not supported (emitted as a comment).
 
 ---
@@ -280,6 +329,19 @@ Read this before changing the grammar/lexer.
   is a single `#include "mod.h"`. Diagnostics raised while parsing an import are
   attributed to the importing file. Import declaration-only `.hx` modules — a
   `.cx` has no generated header to `#include`.
+* **Verbatim capture** (`raw { … }`, `NAME!( … )`) uses two Flex start conditions
+  (`RAW`/`MACRO`) that copy balanced `{}`/`()` into a buffer in `CxParseCtx`; the
+  text is copied into the arena when the token is produced, so it survives LAC
+  lookahead (which may lex ahead without reducing). `raw` is a block only when
+  followed by `{` (otherwise it stays an identifier), and `NAME!(…)` requires the
+  `!` immediately after the identifier. Macro invocation is file/statement
+  position only for now (no expression position).
+* **Traits** are static and check-only: `implements T { … }` is verified against
+  the trait's members (names + signatures; the `self` receiver is ignored). No
+  postfix-call syntax exists, so a call *through* the vtable needs a
+  function-pointer local. The table pointer is installed by the ctor or by a
+  statement emitted after a default declaration `T v;` (and by a designated
+  initializer for globals); a `malloc`'d struct is the user's responsibility.
 * Bison blocks are written for **GNU Bison 3.8**; the parser is pure/reentrant
   and the scanner is `reentrant bison-bridge bison-locations`.
 * In the Neovim syntax file, `~` must be escaped (`\~`) — `~` is the
@@ -290,25 +352,20 @@ Read this before changing the grammar/lexer.
 ## 8. Roadmap (not yet implemented)
 
 Ordered roughly by value (see `examples/klib/REQUIRED_FEATURES.md` for the full
-matrix):
+matrix). Done: **C interop** (`raw { … }` + `#include` + `NAME!(…)` macro
+invocation passthrough) and **static traits** (`trait`/`implements`).
 
-1. **C interop / full C compliance** — `raw { … }` verbatim C passthrough +
-   `#include`, and C function-like macro *invocation* passthrough, so real C
-   (including klib's `KLIST_INIT` / `KHASH_MAP_INIT_INT`) can live inside Cx. See
-   [`MACRO_RULES.md`](./MACRO_RULES.md) §1.
-2. **Attributes `#[…]`** — metadata / codegen directives on structs, fields and
+1. **Attributes `#[…]`** — metadata / codegen directives on structs, fields and
    functions (`#[inline]`, `#[dtor]`, `#[cleanup(…)]`, `#[export]`). Cheap and
    orthogonal to the generics decision. See [`GENERICS.md`](./GENERICS.md) §5.
-3. **`macro!`** — Rust-style token macros: item `macro_rules!` (generative, types
-   *and* functions) plus expression-position invocation. See
+2. **`macro!`** — Rust-style token macros: item `macro_rules!` (generative, types
+   *and* functions) plus expression-position invocation (which would also give a
+   postfix-call syntax for trait tables). See
    [`MACRO_RULES.md`](./MACRO_RULES.md) and [`GENERICS.md`](./GENERICS.md) §6.
-4. **Static traits** — an `implements Trait { … }` block **inside** a struct,
-   lowering to **one pointer per trait to a shared static per-type table**; macros
-   opt in with `requires trait Trait`. Static (no inheritance, no class vtables).
-   See [`GENERICS.md`](./GENERICS.md) §4.
-5. **klib-backed containers** — `List<T>` / `Map<K,V>` on klib, via macros or
-   (later) templates — see the design note below.
-6. A paired `.hx`/`.cx` model (the `.c` includes its header and skips duplicate
+3. **klib-backed containers** — `List<T>` / `Map<K,V>` on klib, via macros or
+   (later) templates — see the design note below. With `raw`/macro passthrough
+   and static traits in place, a `macro_rules!` container layer is the next step.
+4. A paired `.hx`/`.cx` model (the `.c` includes its header and skips duplicate
    declarations).
 
 ### Generics & macros (design note — under discussion)
@@ -341,9 +398,10 @@ or with a first-class Cx generics facility that *uses klib* as the backend?
 
 **Draft recommendation (see [`GENERICS.md`](./GENERICS.md) §8).** Treat the axes
 separately: adopt **attributes `#[…]`** early (metadata/codegen); add **`macro!`**
-(generativity) per [`MACRO_RULES.md`](./MACRO_RULES.md); introduce **explicit
-static traits** (`implements` block inside a struct, methods as function-pointer
-members) that macros `requires`; keep klib as the container backend. Option C (`macro_rules!`) is *a*
+(generativity) per [`MACRO_RULES.md`](./MACRO_RULES.md); **explicit static traits
+are now implemented** (`implements` block inside a struct → one pointer per trait
+to a shared static per-type table, statically checked) — macros will opt in with
+`requires trait`; keep klib as the container backend. Option C (`macro_rules!`) is *a*
 mechanism, not the whole plan; option B (template-like generics) is deferred
 until tooling/type-error quality can be judged on real code. Exposing klib's
 macros directly (A) stays confined to the `raw { … }` / invocation-passthrough
@@ -436,6 +494,31 @@ Append a row per session with the headline changes.
 * Tests added: `nested.cx`, `ctor.cx`, `nested_struct.cx`, `control.cx`,
   `operators.cx`, `prelude.cx`, `pointers.cx`, `casts.cx`, `switch.cx`,
   `funcptr.cx`, `auto.cx`, `types.cx`, `multi.cx`, `header.hx`.
+
+### Session 2026-11-06 (C interop + static traits)
+
+* **Roadmap 1 — C interop.** `raw { … }` verbatim C passthrough (file scope,
+  struct member, statement) via a Flex `RAW` start condition capturing balanced
+  braces; `NAME!( … );` C macro-invocation passthrough via a `MACRO` start
+  condition capturing balanced parens, allowed at file/statement position.
+  `#include`/`#define` passthrough already existed.
+* **Roadmap 4 — static traits.** `trait T { <ret> m(self, …); … };` plus an
+  `implements T { … }` block inside a struct. Lowers to one `struct T__vtable`
+  per trait, a `static const` per-type table, and one pointer field per trait
+  (field name = trait name). Sema checks conformance (method presence +
+  signature; `self` receiver ignored). The pointer is installed by the ctor or,
+  for `T v;`, by a statement after the declaration (globals via a designated
+  initializer).
+* Emitter gained **phase 0** (preamble: trait vtable types, `raw` blocks, macro
+  invocations) and impl-method/vtable emission in phases 2–3; headers emit
+  phases 0–2 (static impls are `.c`-only).
+* AST: `CX_NODE_RAW`, `CX_NODE_MACRO`, `CX_NODE_TRAIT`, `CX_NODE_TRAIT_METHOD`,
+  `CX_NODE_IMPLEMENTS`, `CX_NODE_IMPL_METHOD`; new keywords `trait`,
+  `implements`, `self`; `CxParseCtx` gained capture buffers; `cx_buf_clear`.
+* Tests: `raw.cx`, `traits.cx`.
+* Not yet: expression-position macro invocation / a postfix call syntax (needed
+  to call through a trait table without a function-pointer local); attributes
+  `#[…]`; `macro_rules!`/`macro!`.
 
 ---
 

@@ -1,7 +1,10 @@
 # Cx — Rust-style `macro_rules!` (design)
 
-> Status: **planned / not committed**. Linked from `TECHNICAL.md` §8. This is a
-> design sketch to agree on direction before implementation.
+> Status: **partly implemented**. The C-interop half is done: `raw { … }`
+> verbatim blocks and `NAME!( … )` C macro-invocation passthrough (lexer
+> start-condition capture) — see `TECHNICAL.md` §4. `macro_rules!` itself
+> (definition, matching, expansion) is still **planned / not committed**; the
+> rest of this document is the design sketch for it.
 
 ## 1. Motivation
 
@@ -18,11 +21,11 @@ Two goals drive this:
 
 Three complementary mechanisms, in increasing power:
 
-| Mechanism | Covers | Effort |
-| :-- | :-- | :-- |
-| `raw { … }` (verbatim C) + `#include` passthrough | arbitrary C bodies/decls | low |
-| C function-like macro **invocation** passthrough | `KLIST_INIT(...)` etc. | low |
-| Cx `macro_rules!` | generative Cx (types + functions) | high |
+| Mechanism | Covers | Effort | Status |
+| :-- | :-- | :-- | :-- |
+| `raw { … }` (verbatim C) + `#include` passthrough | arbitrary C bodies/decls | low | **done** |
+| C function-like macro **invocation** passthrough (`NAME!(…)`) | `KLIST_INIT(...)` etc. | low | **done** (file/statement position) |
+| Cx `macro_rules!` | generative Cx (types + functions) | high | planned |
 
 `raw {}` and macro-invocation passthrough give the "use C in Cx" story. Cx
 `macro_rules!` gives the generative story (and can back `List<T>`/`Map<K,V>`,

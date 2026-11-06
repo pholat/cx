@@ -31,6 +31,7 @@ CxSymbolTable *cx_sema_build(CxArena *arena, CxNode *tu, CxDiagList *diags);
 CxSymbol *cx_sema_lookup(const CxSymbolTable *table, const char *qualified);
 CxSymbol *cx_sema_find_struct(const CxSymbolTable *table, const char *name);
 CxSymbol *cx_sema_find_function(const CxSymbolTable *table, const char *name);
+CxSymbol *cx_sema_find_trait(const CxSymbolTable *table, const char *name);
 CxSymbol *cx_sema_find_symbol(const CxSymbolTable *table, const char *name);
 
 int       cx_sema_type_has_dtor(const CxSymbolTable *table, const char *type);

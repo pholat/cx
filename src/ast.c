@@ -157,6 +157,12 @@ const char *cx_node_kind_name(CxNodeKind kind) {
     case CX_NODE_LABEL:            return "label";
     case CX_NODE_GOTO:             return "goto";
     case CX_NODE_TYPEDEF:          return "typedef";
+    case CX_NODE_RAW:              return "raw";
+    case CX_NODE_MACRO:            return "macro";
+    case CX_NODE_TRAIT:            return "trait";
+    case CX_NODE_TRAIT_METHOD:     return "trait_method";
+    case CX_NODE_IMPLEMENTS:       return "implements";
+    case CX_NODE_IMPL_METHOD:      return "impl_method";
     case CX_NODE_ERROR:            return "error";
     }
     return "?";

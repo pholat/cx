@@ -1,0 +1,25 @@
+#include <stddef.h>
+
+#define DECLARE_PAIR(name, a, b) struct name { a x; b y; }
+
+namespace demo {
+
+    // C macro invocation passthrough: emits `DECLARE_PAIR(Pair, int, int);`.
+    DECLARE_PAIR!(Pair, int, int);
+
+    struct Holder {
+        raw { struct Pair pair; }  // verbatim member (macro-generated type)
+        int tag;
+    };
+
+    int sum() {
+        raw {
+            struct Pair p;
+            p.x = 1;
+            p.y = 2;
+            (void)p;
+        }
+        int total = 3;
+        return total;
+    }
+}
