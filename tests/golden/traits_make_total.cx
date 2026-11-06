@@ -8,7 +8,7 @@ trait Iterable {
 // installed static vtable (`r.Iterable`) using function-pointer locals, since
 // Cx has no postfix call syntax.
 macro_rules! make_total {
-    ($name:ident, $t:ty) => {
+    ($name:ident, $t:ty) requires $t: Iterable => {
         int $name($t r) {
             int (*len)(void *) = r.Iterable->len;
             int (*at)(void *, int) = r.Iterable->at;

@@ -67,6 +67,8 @@ typedef enum {
     CX_NODE_ERROR
 } CxNodeKind;
 
+struct CxMacroMap; /* defined in macro.h (generated-name -> macro origins) */
+
 typedef struct CxNode CxNode;
 
 typedef struct {
@@ -100,6 +102,9 @@ struct CxNode {
     CxVec params;   /* function parameters */
     CxVec imports;  /* translation unit: imported module roots */
     CxVec attrs;    /* `#[…]` attributes (CX_NODE_ATTR items) on this item */
+
+    /* Translation unit only: generated-name -> macro-definition origins (LSP). */
+    struct CxMacroMap *macro_map;
 };
 
 /* ----------------------------------------------------------------- helpers */

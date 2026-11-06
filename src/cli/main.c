@@ -65,7 +65,7 @@ static int run_expand(const char *in) {
     CxArena *arena = cx_arena_new();
     CxDiagList diags;
     cx_diaglist_init(&diags, in);
-    char *expanded = cx_macro_expand(arena, src, len, in, &diags);
+    char *expanded = cx_macro_expand(arena, src, len, in, &diags, NULL);
     fputs(expanded, stdout);
     int rc = cx_diaglist_has_errors(&diags) ? 1 : 0;
     cx_diaglist_print(&diags, stderr);

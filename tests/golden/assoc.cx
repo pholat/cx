@@ -1,0 +1,23 @@
+namespace demo {
+
+    struct Point {
+        int x;
+    };
+
+    // `Point::new(...)` / `Point::get(...)` lower to functions named
+    // `Point__new` / `Point__get` (resolved and namespace-mangled by sema).
+    Point Point__new(int x) {
+        Point p;
+        p.x = x;
+        return p;
+    }
+
+    int Point__get(Point *p) {
+        return p->x;
+    }
+
+    int run() {
+        Point p = Point::new(3);
+        return Point::get(&p);
+    }
+}

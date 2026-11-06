@@ -439,6 +439,7 @@ struct MTrans {
     char    sep;
     int     has_sep;
     char    op;
+    CxSpan  span; /* source span in the macro definition */
 };
 
 typedef struct {
@@ -580,6 +581,7 @@ static TrVec parse_tr_tokens(CxArena *a, CxDiagList *diags, MToken **toks,
                 if (!r) return out;
                 r->open = g->open;
                 r->close = g->close;
+                r->span = tok_span(t);
                 TrVec sub = parse_tr_group(a, diags, g);
                 r->kids = sub.items;
                 r->nkids = sub.len;
@@ -606,6 +608,7 @@ static TrVec parse_tr_tokens(CxArena *a, CxDiagList *diags, MToken **toks,
                 MTrans *v = tr_new(a, T_VAR);
                 if (!v) return out;
                 v->text = toks[i + 1]->text;
+                v->span = tok_span(toks[i + 1]);
                 tr_push(a, &out, v);
                 i += 2;
                 continue;
@@ -619,6 +622,7 @@ static TrVec parse_tr_tokens(CxArena *a, CxDiagList *diags, MToken **toks,
             if (!g) return out;
             g->open = t->open;
             g->close = t->close;
+            g->span = tok_span(t);
             TrVec sub = parse_tr_group(a, diags, t);
             g->kids = sub.items;
             g->nkids = sub.len;
@@ -629,6 +633,7 @@ static TrVec parse_tr_tokens(CxArena *a, CxDiagList *diags, MToken **toks,
         MTrans *tok = tr_new(a, T_TOKEN);
         if (!tok) return out;
         tok->text = t->text;
+        tok->span = tok_span(t);
         tr_push(a, &out, tok);
         i++;
     }
@@ -637,12 +642,53 @@ static TrVec parse_tr_tokens(CxArena *a, CxDiagList *diags, MToken **toks,
 
 /* ================================================================== macros */
 
+/* A `requires $x: TraitA + TraitB` constraint attached to one metavariable.
+ * The requirement is parsed and recorded on the rule; it is not statically
+ * checked yet (that is a later roadmap item). */
+typedef struct {
+    char  *var;
+    char **traits;
+    int    ntraits;
+} MReq;
+
+typedef struct {
+    MReq *items;
+    int   len;
+    int   cap;
+} ReqVec;
+
 typedef struct {
     MPat  **pat;
     int     npat;
     MTrans **tr;
     int     ntr;
+    MReq   *reqs;
+    int     nreqs;
 } MRule;
+
+static void req_push(CxArena *a, ReqVec *v, MReq req) {
+    if (v->len == v->cap) {
+        int cap = v->cap ? v->cap * 2 : 4;
+        MReq *items = (MReq *)cx_arena_alloc(a, sizeof(MReq) * (size_t)cap);
+        if (!items) return;
+        if (v->items && v->len)
+            memcpy(items, v->items, sizeof(MReq) * (size_t)v->len);
+        v->items = items;
+        v->cap = cap;
+    }
+    v->items[v->len++] = req;
+}
+
+static int pat_has_var(MPat **pats, int n, const char *name) {
+    for (int i = 0; i < n; i++) {
+        MPat *p = pats[i];
+        if (p->kind == P_FRAG && p->text && !strcmp(p->text, name)) return 1;
+        if ((p->kind == P_GROUP || p->kind == P_REP) && p->kids &&
+            pat_has_var(p->kids, p->nkids, name))
+            return 1;
+    }
+    return 0;
+}
 
 typedef struct {
     char      *name;
@@ -1000,8 +1046,47 @@ static int trans_count(MTrans **kids, int n, MEnv *env) {
     return c < 0 ? 0 : c;
 }
 
+static void macro_map_add(CxArena *a, CxMacroMap *map, const char *name,
+                          CxSpan span) {
+    if (!map || !name) return;
+    for (int i = 0; i < map->len; i++)
+        if (map->items[i].name && !strcmp(map->items[i].name, name)) return;
+    if (map->len == map->cap) {
+        int cap = map->cap ? map->cap * 2 : 8;
+        CxMacroOrigin *items =
+            (CxMacroOrigin *)cx_arena_alloc(a, sizeof(CxMacroOrigin) * (size_t)cap);
+        if (!items) return;
+        if (map->items && map->len)
+            memcpy(items, map->items, sizeof(CxMacroOrigin) * (size_t)map->len);
+        map->items = items;
+        map->cap = cap;
+    }
+    map->items[map->len].name = cx_arena_strdup(a, name);
+    map->items[map->len].span = span;
+    map->len++;
+}
+
+const CxSpan *cx_macro_map_find(const CxMacroMap *map, const char *name) {
+    if (!map || !name) return NULL;
+    for (int i = 0; i < map->len; i++)
+        if (map->items[i].name && !strcmp(map->items[i].name, name))
+            return &map->items[i].span;
+    return NULL;
+}
+
 static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span,
-                       MTrans **tr, int ntr, MEnv *env, int index, Out *o);
+                       MTrans **tr, int ntr, MEnv *env, int index, Out *o,
+                       CxMacroMap *map);
+
+/* The single token captured by `$x` when it is an identifier, or NULL. Used to
+ * form `$x::method` names and to record macro-definition origins. */
+static MToken *single_ident_cap(MBind *b, int index) {
+    if (!b) return NULL;
+    int ci = index >= 0 ? index : 0;
+    if (ci >= b->ncaps || b->lens[ci] != 1) return NULL;
+    MToken *t = b->caps[ci][0];
+    return (t && t->kind == MT_IDENT) ? t : NULL;
+}
 
 static void transcribe_var(Out *o, MBind *b, int index) {
     if (!b) return;
@@ -1018,7 +1103,8 @@ static void transcribe_var(Out *o, MBind *b, int index) {
 }
 
 static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span,
-                       MTrans **tr, int ntr, MEnv *env, int index, Out *o) {
+                       MTrans **tr, int ntr, MEnv *env, int index, Out *o,
+                       CxMacroMap *map) {
     for (int i = 0; i < ntr; i++) {
         MTrans *t = tr[i];
         switch (t->kind) {
@@ -1027,15 +1113,43 @@ static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span,
             else if (t->text && t->text[0] == '#') out_opaque(o, t->text);
             else out_text(o, t->text);
             break;
-        case T_VAR:
-            transcribe_var(o, env_get(env, t->text), index);
+        case T_VAR: {
+            MBind *b = env_get(env, t->text);
+            MToken *bt = single_ident_cap(b, index);
+            /* `struct $name` defines a generated type: let definition on the
+             * type name jump back to the `$name` in the macro. */
+            if (bt && i > 0 && tr[i - 1]->kind == T_TOKEN &&
+                tr[i - 1]->text && !strcmp(tr[i - 1]->text, "struct"))
+                macro_map_add(a, map, bt->text, t->span);
+            /* `$name(params) { … }` is a generated function/constructor: map the
+             * name so LSP definition jumps to the macro. */
+            if (bt && i + 2 < ntr && tr[i + 1]->kind == T_GROUP &&
+                tr[i + 1]->open == '(' && tr[i + 2]->kind == T_GROUP &&
+                tr[i + 2]->open == '{')
+                macro_map_add(a, map, bt->text, t->span);
+            /* `$name::method` in a transcription is the public spelling of the
+             * internal `Name__method` name. Emit the joined name and record
+             * where `$name` came from so the LSP can jump into the macro. */
+            if (bt && i + 2 < ntr && tr[i + 1]->kind == T_TOKEN &&
+                tr[i + 1]->text && !strcmp(tr[i + 1]->text, "::") &&
+                tr[i + 2]->kind == T_TOKEN && tr[i + 2]->text &&
+                is_ident_start(tr[i + 2]->text[0])) {
+                char *name = cx_arena_printf(a, "%s__%s", bt->text,
+                                             tr[i + 2]->text);
+                macro_map_add(a, map, name, t->span);
+                out_text(o, name);
+                i += 2;
+                break;
+            }
+            transcribe_var(o, b, index);
             break;
+        }
         case T_GROUP: {
             char open[2] = {t->open, '\0'};
             char close[2] = {t->close, '\0'};
             out_text(o, open);
             o->join = 1;
-            transcribe(a, diags, span, t->kids, t->nkids, env, index, o);
+            transcribe(a, diags, span, t->kids, t->nkids, env, index, o, map);
             out_text(o, close);
             break;
         }
@@ -1046,7 +1160,7 @@ static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span,
                     char sep[2] = {t->sep, '\0'};
                     out_text(o, sep);
                 }
-                transcribe(a, diags, span, t->kids, t->nkids, env, k, o);
+                transcribe(a, diags, span, t->kids, t->nkids, env, k, o, map);
             }
             break;
         }
@@ -1058,6 +1172,91 @@ static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span,
 }
 
 /* ============================================================== definitions */
+
+typedef struct {
+    char **items;
+    int    len;
+    int    cap;
+} NameVec;
+
+static void name_push(CxArena *a, NameVec *v, char *name) {
+    if (v->len == v->cap) {
+        int cap = v->cap ? v->cap * 2 : 4;
+        char **items = (char **)cx_arena_alloc(a, sizeof(char *) * (size_t)cap);
+        if (!items) return;
+        if (v->items && v->len)
+            memcpy(items, v->items, sizeof(char *) * (size_t)v->len);
+        v->items = items;
+        v->cap = cap;
+    }
+    v->items[v->len++] = name;
+}
+
+/* Optional `requires $x: TraitA + TraitB, $y: TraitC` between the pattern group
+ * and `=>`. The requirements are attached to metavariables; they are recorded
+ * on the rule and will be checked in a later pass. */
+static int parse_requires(CxArena *a, CxDiagList *diags, MToken **toks, int n,
+                          int *pi, MRule *rule) {
+    int i = *pi;
+    if (!(i < n && toks[i]->kind == MT_IDENT && toks[i]->text &&
+          !strcmp(toks[i]->text, "requires")))
+        return 1; /* no clause */
+
+    MToken *kw = toks[i];
+    i++;
+
+    if (i < n && toks[i]->kind == MT_IDENT && toks[i]->text &&
+        (!strcmp(toks[i]->text, "trait") || !strcmp(toks[i]->text, "traits"))) {
+        cx_error(diags, tok_span(toks[i]),
+                 "attach a requirement to a metavariable, e.g. "
+                 "`requires $x: Trait`");
+        return 0;
+    }
+
+    ReqVec reqs = {0};
+    for (;;) {
+        if (!(i + 2 < n && tok_is_punct(toks[i], "$") &&
+              toks[i + 1]->kind == MT_IDENT && tok_is_punct(toks[i + 2], ":"))) {
+            cx_error(diags, tok_span(i < n ? toks[i] : kw),
+                     "expected `$metavariable: Trait` in requires clause");
+            return 0;
+        }
+        MReq req;
+        memset(&req, 0, sizeof req);
+        req.var = toks[i + 1]->text;
+        i += 3;
+
+        if (i >= n || toks[i]->kind != MT_IDENT) {
+            cx_error(diags, tok_span(i < n ? toks[i] : kw),
+                     "expected a trait name after ':' in requires clause");
+            return 0;
+        }
+
+        NameVec tr = {0};
+        name_push(a, &tr, toks[i]->text);
+        i++;
+        while (i + 1 < n && tok_is_punct(toks[i], "+") &&
+               toks[i + 1]->kind == MT_IDENT) {
+            name_push(a, &tr, toks[i + 1]->text);
+            i += 2;
+        }
+        req.traits = tr.items;
+        req.ntraits = tr.len;
+        req_push(a, &reqs, req);
+
+        if (i < n && tok_is_punct(toks[i], ",")) {
+            i++;
+            if (i < n && tok_is_punct(toks[i], "=>")) break; /* trailing comma */
+            continue;
+        }
+        break;
+    }
+
+    rule->reqs = reqs.items;
+    rule->nreqs = reqs.len;
+    *pi = i;
+    return 1;
+}
 
 static int parse_macro_body(CxArena *a, CxDiagList *diags, Macro *mac,
                             MToken *body) {
@@ -1075,6 +1274,15 @@ static int parse_macro_body(CxArena *a, CxDiagList *diags, Macro *mac,
             return 0;
         }
         MToken *patgrp = body->kids[i++];
+        PatVec pat = parse_pat_group(a, diags, patgrp);
+
+        MRule r;
+        memset(&r, 0, sizeof r);
+        r.pat = pat.items;
+        r.npat = pat.len;
+
+        if (!parse_requires(a, diags, body->kids, body->nkids, &i, &r))
+            return 0;
 
         if (i >= body->nkids || !tok_is_punct(body->kids[i], "=>")) {
             cx_error(diags, tok_span(patgrp),
@@ -1090,13 +1298,17 @@ static int parse_macro_body(CxArena *a, CxDiagList *diags, Macro *mac,
         }
         MToken *trgrp = body->kids[i++];
 
-        PatVec pat = parse_pat_group(a, diags, patgrp);
         TrVec tr = parse_tr_group(a, diags, trgrp);
-        MRule r;
-        r.pat = pat.items;
-        r.npat = pat.len;
         r.tr = tr.items;
         r.ntr = tr.len;
+
+        for (int k = 0; k < r.nreqs; k++) {
+            if (!pat_has_var(r.pat, r.npat, r.reqs[k].var))
+                cx_error(diags, tok_span(patgrp),
+                         "requires names unknown metavariable '$%s'",
+                         r.reqs[k].var);
+        }
+
         macro_add_rule(a, mac, r);
     }
     return mac->nrules > 0;
@@ -1207,7 +1419,7 @@ static void scan_defs(CxArena *a, CxDiagList *diags, const char *src,
 }
 
 static char *expand_invocation(CxArena *a, CxDiagList *diags, Macro *mac,
-                               MToken *args, CxSpan span) {
+                               MToken *args, CxSpan span, CxMacroMap *map) {
     for (int r = 0; r < mac->nrules; r++) {
         MRule *rule = &mac->rules[r];
         MEnv env = {0};
@@ -1218,7 +1430,8 @@ static char *expand_invocation(CxArena *a, CxDiagList *diags, Macro *mac,
             CxBuf buf;
             cx_buf_init(&buf);
             Out out = {&buf, 0};
-            transcribe(a, diags, span, rule->tr, rule->ntr, &env, -1, &out);
+            transcribe(a, diags, span, rule->tr, rule->ntr, &env, -1, &out,
+                       map);
             char *result = cx_arena_strdup(a, buf.data ? buf.data : "");
             cx_buf_free(&buf);
             return result;
@@ -1251,7 +1464,7 @@ static int group_item_scope(MToken **toks, int idx) {
 
 static void scan_invocations(CxArena *a, CxDiagList *diags, MToken **toks,
                              int n, MacroTable *tab, ReplVec *reps, int *found,
-                             int item_scope) {
+                             int item_scope, CxMacroMap *map) {
     for (int i = 0; i < n; i++) {
         if (is_macro_def_start(toks, i, n)) {
             i += 3; /* skip the definition body */
@@ -1263,7 +1476,7 @@ static void scan_invocations(CxArena *a, CxDiagList *diags, MToken **toks,
             if (mac) {
                 MToken *args = toks[i + 2];
                 char *text = expand_invocation(a, diags, mac, args,
-                                               tok_span(toks[i]));
+                                               tok_span(toks[i]), map);
                 size_t end = args->end;
                 int skip = 2;
                 /* At item scope a bare `name!(…);` invocation owns its
@@ -1292,7 +1505,7 @@ static void scan_invocations(CxArena *a, CxDiagList *diags, MToken **toks,
             if (toks[i]->open == '{')
                 child_item = group_item_scope(toks, i);
             scan_invocations(a, diags, toks[i]->kids, toks[i]->nkids, tab, reps,
-                             found, child_item);
+                             found, child_item, map);
         }
     }
 }
@@ -1340,7 +1553,8 @@ static char *apply_repls(CxArena *a, const char *src, size_t len,
 /* ------------------------------------------------------------------ API */
 
 char *cx_macro_expand(CxArena *arena, const char *src, size_t len,
-                      const char *filename, CxDiagList *diags) {
+                      const char *filename, CxDiagList *diags,
+                      CxMacroMap *map) {
     (void)filename;
     if (!src) return cx_arena_strdup(arena, "");
 
@@ -1368,7 +1582,7 @@ char *cx_macro_expand(CxArena *arena, const char *src, size_t len,
         scan_defs(arena, diags, cur, toks.items, toks.len, &table, &reps,
                   &found);
         scan_invocations(arena, diags, toks.items, toks.len, &table, &reps,
-                         &found, 1);
+                         &found, 1, map);
 
         if (!found) return cur;
 

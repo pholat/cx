@@ -1,0 +1,75 @@
+#include "klist.h"
+
+// klib's KLIST_INIT needs a free callback with C linkage. One shared no-op is
+// enough for POD elements; it is defined before the generated instantiations.
+raw {
+    static void cx_nofree(void *p) { (void)p; }
+}
+
+// A macro-defined, klib-backed list. `KLIST_INIT!` is the C-macro passthrough;
+// the generated klib symbols are named `kl_init_<Name>`, `kl_pushp_<Name>`, …
+// The Cx wrapper stores the klib list as `void *` so it never has to spell
+// `klist_t(<Name>)` (which Cx types cannot express).
+//
+// The public method spelling is `$name::new` / `::push` / … — the expander
+// rewrites that to the internal `Name__new` name, so no `__` appears here.
+macro_rules! define_list {
+    ($name:ident, $t:ty) => {
+        KLIST_INIT!($name, $t, cx_nofree);
+
+        struct $name {
+            void *v;
+            int n;
+        };
+
+        $name $name::new() {
+            $name l;
+            l.v = kl_init_##$name();
+            l.n = 0;
+            return l;
+        }
+
+        void $name::push($name *l, $t value) {
+            $t *p = kl_pushp_##$name(l->v);
+            *p = value;
+            l->n += 1;
+        }
+
+        $t $name::pop($name *l, $t fallback) {
+            $t out;
+            if (kl_shift_##$name(l->v, &out) == 0) {
+                l->n -= 1;
+                return out;
+            }
+            return fallback;
+        }
+
+        int $name::size($name *l) {
+            return l->n;
+        }
+
+        void $name::free($name *l) {
+            kl_destroy_##$name(l->v);
+            l->v = 0;
+            l->n = 0;
+        }
+    };
+}
+
+namespace demo {
+
+    define_list!(IntList, int);
+
+    int run() {
+        IntList l = IntList::new();
+        IntList::push(&l, 10);
+        IntList::push(&l, 20);
+
+        int a = IntList::pop(&l, 0);
+        int b = IntList::pop(&l, 0);
+        int n = IntList::size(&l);
+
+        IntList::free(&l);
+        return a + b + n;
+    }
+}

@@ -16,7 +16,8 @@ for src in "$root"/tests/golden/*.hx; do
     name=$(basename "$src" .hx)
     echo "== $name (header)"
     "$cx" build "$src" -o "$tmp/$name.h"
-    ${CC:-cc} -std=gnu11 -Wall -Wextra -I"$tmp" -fsyntax-only -x c "$tmp/$name.h"
+    ${CC:-cc} -std=gnu11 -Wall -Wextra -I"$tmp" -I"$root/submodules/klib" \
+        -fsyntax-only -x c "$tmp/$name.h"
 done
 
 # Sources.
@@ -30,7 +31,8 @@ done
 # Compile each generated source (no linkage; imports resolve via -I).
 for c in "$tmp"/*.c; do
     [ -e "$c" ] || continue
-    ${CC:-cc} -std=gnu11 -Wall -Wextra -I"$tmp" -c "$c" -o "${c%.c}.o"
+    ${CC:-cc} -std=gnu11 -Wall -Wextra -I"$tmp" -I"$root/submodules/klib" \
+        -c "$c" -o "${c%.c}.o"
 done
 
 echo "golden: OK"

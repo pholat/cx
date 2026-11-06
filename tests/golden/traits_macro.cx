@@ -21,7 +21,7 @@ int iterable_total(void *obj,
 // is the `Iterable` field installed by Row's constructor. (Cx has no postfix
 // call syntax, so the two vtable members are passed as function pointers.)
 macro_rules! total {
-    ($x:expr) => {
+    ($x:expr) requires $x: Iterable => {
         iterable_total(&($x), ($x).Iterable->len, ($x).Iterable->at)
     };
 }

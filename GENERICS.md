@@ -7,9 +7,15 @@
 > `macro_rules!`** (§6: item + expression-position token macros — see
 > [`MACRO_RULES.md`](./MACRO_RULES.md) and `TECHNICAL.md` §4). Still open:
 > template-like generics, `requires trait`, and macro hygiene/LSP indexing.
+> **Traits in macros is split** (`ROADMAP.md`): the `requires` clause bound
+> to metavariables (`requires $x: Iterable`, `requires $k: A + B, …`) and
+> trait-member access are **implemented** (requirements are parsed, validated
+> against the pattern and recorded, but not yet checked). The checked
+> conformance pass follows the container layer, once containers show which
+> traits and associated types are real.
 > `macro_rules!` was picked partly because C++-style templates are hard to
 > *read*; the direction is being revisited but a container layer can now be
-> built on the implemented macro expander. Linked from `TECHNICAL.md` §8.
+> built on the implemented macro expander. Linked from `ROADMAP.md`.
 
 ## 1. The problem
 
@@ -125,20 +131,17 @@ A macro requires the trait and calls through the registered (pointer) members:
 
 ```cxc
 macro_rules! sum_over {
-    ($x:expr) requires trait Iterable => {
-        int total = 0;
-        int i = 0;
-        for (i = 0; i < $x->Iterable->len($x); i = i + 1) {
-            total += $x->Iterable->at($x, i);
-        }
-        total
+    ($x:expr) requires $x: Iterable => {
+        /* … reach ($x).Iterable->len / ->at … */
     };
 }
 ```
 
-`requires trait Iterable` restricts the macro to values whose type `implements
-Iterable`, and gives the expansion access to the trait's members. It is resolved
-**statically** — the macro body is only well-formed for conforming types.
+`requires $x: Iterable` restricts the macro to values whose type `implements
+Iterable`, and gives the expansion access to the trait's members. The clause is
+parsed and recorded; the **static check** is a later roadmap step. (Calls through
+the table still need a function-pointer local or helper until a postfix-call
+syntax exists.)
 
 ### Why this covers list/map
 
@@ -234,8 +237,10 @@ klib stays the container backend in all current cases, but that may change to in
 
 ## 9. Open questions
 
-* `requires trait` spelling; can a macro require several traits at once
-  (`requires trait Iterable, Comparable`)?
+* `requires` spelling — **decided/implemented**: attach requirements to
+  metavariables (`requires $x: Iterable`); multiple traits use `+`
+  (`requires $k: Hashable + Equatable`), and multiple metavariables use commas.
+  Still open: how the check resolves the type of an `$x:expr` argument.
 * Conformance check: **exact signature match**, or member names only?
 * Trait member visibility/mangling: `Trait__method` vs `Type__Trait__method`.
 * Do traits carry **associated types/constants** (needed for real generic

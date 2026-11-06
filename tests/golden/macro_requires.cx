@@ -1,0 +1,48 @@
+trait A {
+    int a(self);
+}
+
+trait B {
+    int b(self);
+}
+
+// `requires` binds trait requirements to metavariables. This is parsed and
+// recorded on the rule (the conformance check is a later step); the body can
+// already reach the trait members through their fields (`x.A`, `x.B`).
+macro_rules! require_both {
+    ($x:expr) requires $x: A + B => {
+        both_total(&($x), ($x).A->a, ($x).B->b)
+    };
+}
+
+int both_total(void *obj, int (*a)(void *), int (*b)(void *)) {
+    return a(obj) + b(obj);
+}
+
+namespace demo {
+
+    struct Both {
+        int v;
+
+        Both(int x) {
+            v = x;
+        }
+
+        implements A {
+            int a(self) {
+                return self->v;
+            }
+        }
+
+        implements B {
+            int b(self) {
+                return self->v + 1;
+            }
+        }
+    };
+
+    int run() {
+        Both x(10);
+        return require_both!(x);
+    }
+}

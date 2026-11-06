@@ -437,6 +437,14 @@ expr:
         { $$ = MK(CX_NODE_EXPR_STRING, (@$)); $$->name = $1; }
     | IDENT '(' arg_list ')'
         { $$ = MK(CX_NODE_EXPR_CALL, (@$)); $$->name = $1; $$->children = $3; }
+    /* Associated call, e.g. `IntList::new(...)`. It lowers to a function named
+     * `IntList__new` (the `__` convention), resolved/mangled by sema/codegen
+     * like any other call. This makes static container entry points read as
+     * methods without needing receiver-type inference. */
+    | TYPE_NAME SCOPE IDENT '(' arg_list ')'
+        { $$ = MK(CX_NODE_EXPR_CALL, (@$));
+          $$->name = cx_arena_printf(ctx->arena, "%s__%s", $1, $3);
+          $$->children = $5; }
     | '(' expr ')'
         { $$ = MK(CX_NODE_EXPR_PAREN, (@$)); $$->lhs = $2; }
     | expr '.' IDENT

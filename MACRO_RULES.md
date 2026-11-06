@@ -3,10 +3,17 @@
 > Status: **core implemented**. `raw { … }` / `NAME!( … )` C passthrough, and
 > now `macro_rules!` definitions, matching (`$x:frag`, repetitions, `##`) and
 > expansion in item/statement/expression position — see `TECHNICAL.md` §4 and
-> `src/macro.c`. Still **not implemented**: hygienic renaming, LSP macro symbols
-> / expansion preview, and a fully backtracking matcher (fragment capture is
-> currently greedy). The rest of this document is the original design sketch;
-> where it differs from the implementation, `TECHNICAL.md` §4/§7 wins.
+> `src/macro.c`. Also **implemented**: the `requires` clause bound to
+> metavariables (`requires $x: Trait`, `requires $k: A + B, …`) and trait-member
+> access in transcriptions; the requirements are parsed/recorded but the
+> **checked conformance pass** is deferred until after the container layer.
+> Still **not implemented**: that check, hygienic renaming, full LSP macro
+> symbols / expansion preview, and a fully backtracking matcher (fragment capture
+> is currently greedy). The expander records a generated-name →
+> macro-definition origin map, but **jump-to-definition for the macro-generated
+> `IntList` methods in `tests/golden/klib_list.cx` is still broken/open** — see
+> `ROADMAP.md`. The rest of this document is the original design sketch; where
+> it differs from the implementation, `TECHNICAL.md` §4/§7 wins.
 
 The implementation lives in `src/macro.c` and runs as a **textual pre-parse
 pass**: it tokenises into a small token tree, removes definitions, substitutes
@@ -52,6 +59,32 @@ macro_rules! vec_of {
     };
 }
 ```
+
+A rule may carry an optional `requires` clause between its pattern and `=>`,
+binding trait requirements to metavariables:
+
+```cxc
+macro_rules! total {
+    ($x:expr) requires $x: Iterable => {
+        /* … */
+    };
+}
+
+macro_rules! pair_of {
+    ($name:ident, $k:ty, $v:ty)
+        requires $k: Hashable + Equatable, $v: Clone
+    => { /* … */ };
+}
+```
+
+The clause is currently parsed and recorded (the metavariable must exist in the
+pattern); static conformance checking is a later roadmap step.
+
+A transcription may write `$name::method` as the public spelling of the internal
+`Name__method` identifier; the expander rewrites it automatically and records a
+generated-name → macro-definition origin for LSP `definition` (the jump is still
+being fixed for the container test — see `ROADMAP.md`). (Plain `##`
+concatenation remains available for klib/C names such as `kl_init_##$name`.)
 
 Invocation:
 
@@ -121,8 +154,11 @@ Macro expansion destroys the 1:1 source mapping. Mitigation:
 
 Macros are the hard case for language tooling; state the limits up front:
 
-* **Definitions** are indexed (name → definition location); `definition`/`hover`
-  on a macro name work.
+* **Macro definitions are not indexed yet** (they are removed before the AST is
+  built), so `definition`/`hover` on a macro name are not reliable.
+* Generated-name → macro-definition origins are recorded for `$name::method`,
+  generated functions and `struct $name`, but **jump-to-definition for the
+  `klib_list.cx` methods is still broken** (see `ROADMAP.md`).
 * **Inside** a macro body/invocation, completion/definition are best-effort
   (the tokens are macro-typed, not yet Cx-typed).
 * Optional later: **expansion preview** (rust-analyzer style) — show the expanded
@@ -149,8 +185,8 @@ So the layering can be:
 1. `raw { … }` + macro-invocation passthrough — "use C in Cx" (unblocks klib).
 2. `macro_rules!` — generative Cx.
 3. `List<T>`/`Map<K,V>` — either defined with `macro_rules!` in a stdlib `.hx`,
-   or later promoted to first-class template-like generics (see `TECHNICAL.md`
-   §8 design note). `macro_rules!` is strictly more general; templates are nicer
+   or later promoted to first-class template-like generics (see `ROADMAP.md`
+   design note). `macro_rules!` is strictly more general; templates are nicer
    for tooling and type errors. Decision deferred until `macro_rules!` exists.
 
 ## 8. Implementation plan (phases)
@@ -170,7 +206,9 @@ So the layering can be:
    invocation). `#line` mapping through expansion is approximate (definitions are
    replaced by blank lines; expansions may shift columns).
 7. **LSP**: index macro definitions; definition/hover; expansion preview — **not
-   done** (definitions are removed before the AST is built).
+   done** (definitions are removed before the AST is built). Partial:
+   generated-name → macro-origin map exists, but jump-to-definition for the
+   `klib_list.cx` methods still needs fixing.
 8. **Stdlib** built with `macro_rules!` (e.g. `List<T>`, `Map<K,V>`, `defer`, …) —
    **next** (the klib-backed container layer).
 

@@ -299,7 +299,8 @@ void cx_import(CxParseCtx *ctx, const char *raw) {
     if (ctx->active_len < ctx->active_cap)
         ctx->active[ctx->active_len++] = cx_arena_strdup(ctx->arena, resolved);
 
-    char *expanded = cx_macro_expand(ctx->arena, src, got, resolved, ctx->diags);
+    char *expanded =
+        cx_macro_expand(ctx->arena, src, got, resolved, ctx->diags, NULL);
     CxNode *imported = parse_source(ctx, expanded ? expanded : src,
                                     expanded ? strlen(expanded) : got,
                                     resolved, 1);
@@ -337,7 +338,8 @@ CxNode *cx_parse(CxArena *arena, const char *src, size_t len,
     for (int i = 0; builtin_types[i]; i++)
         cx_typeset_add(&ctx.types, builtin_types[i]);
 
-    char *expanded = cx_macro_expand(arena, src, len, filename, diags);
+    CxMacroMap *map = (CxMacroMap *)cx_arena_alloc(arena, sizeof(CxMacroMap));
+    char *expanded = cx_macro_expand(arena, src, len, filename, diags, map);
     CxNode *root = parse_source(&ctx, expanded ? expanded : src,
                                 expanded ? strlen(expanded) : len, filename, 0);
 
@@ -346,6 +348,7 @@ CxNode *cx_parse(CxArena *arena, const char *src, size_t len,
             root->prelude = cx_arena_strdup(arena, ctx.prelude.data);
         root->file = cx_arena_strdup(arena, filename);
         root->imports = ctx.imports;
+        root->macro_map = map;
     }
     cx_buf_free(&ctx.prelude);
     cx_buf_free(&ctx.raw);
