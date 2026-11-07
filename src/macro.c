@@ -481,6 +481,14 @@ static CxSpan tok_span(const MToken *t) {
     return s;
 }
 
+/* Like `tok_span` but spanning the whole token, so position queries (the LSP's
+ * "is the cursor on this invocation?") match any column of the identifier. */
+static CxSpan tok_span_full(const MToken *t) {
+    int n = (int)(t->end > t->start ? t->end - t->start : 1);
+    CxSpan s = {t->line, t->col, t->line, t->col + (n > 1 ? n - 1 : 0)};
+    return s;
+}
+
 /* ------------------------------------------------------- parsing patterns */
 
 static PatVec parse_pat_tokens(CxArena *a, CxDiagList *diags, MToken **toks,
@@ -633,7 +641,7 @@ static TrVec parse_tr_tokens(CxArena *a, CxDiagList *diags, MToken **toks,
         MTrans *tok = tr_new(a, T_TOKEN);
         if (!tok) return out;
         tok->text = t->text;
-        tok->span = tok_span(t);
+        tok->span = tok_span_full(t);
         tr_push(a, &out, tok);
         i++;
     }
@@ -1074,6 +1082,88 @@ const CxSpan *cx_macro_map_find(const CxMacroMap *map, const char *name) {
     return NULL;
 }
 
+/* Record a `requires` binding: `type_text` was bound to a metavariable that must
+ * implement `trait`. Duplicates (same type + trait) are ignored. */
+static void macro_req_add(CxArena *a, CxMacroMap *map, const char *type_text,
+                          const char *trait, CxSpan span) {
+    if (!map || !type_text || !trait) return;
+    for (int i = 0; i < map->nreqs; i++)
+        if (map->reqs[i].type && map->reqs[i].trait &&
+            !strcmp(map->reqs[i].type, type_text) &&
+            !strcmp(map->reqs[i].trait, trait))
+            return;
+    if (map->nreqs == map->reqcap) {
+        int cap = map->reqcap ? map->reqcap * 2 : 8;
+        CxMacroReq *items =
+            (CxMacroReq *)cx_arena_alloc(a, sizeof(CxMacroReq) * (size_t)cap);
+        if (!items) return;
+        if (map->reqs && map->nreqs)
+            memcpy(items, map->reqs, sizeof(CxMacroReq) * (size_t)map->nreqs);
+        map->reqs = items;
+        map->reqcap = cap;
+    }
+    map->reqs[map->nreqs].type = cx_arena_strdup(a, type_text);
+    map->reqs[map->nreqs].trait = cx_arena_strdup(a, trait);
+    map->reqs[map->nreqs].span = span;
+    map->nreqs++;
+}
+
+/* Record a `macro_rules!` invocation: the name token's site and the macro's
+ * definition span. Deduplicated by (name, site). */
+static void macro_invoke_add(CxArena *a, CxMacroMap *map, const char *name,
+                             CxSpan site, CxSpan def) {
+    if (!map || !name) return;
+    for (int i = 0; i < map->ninvokes; i++)
+        if (map->invokes[i].name && !strcmp(map->invokes[i].name, name) &&
+            map->invokes[i].site.first_line == site.first_line &&
+            map->invokes[i].site.first_column == site.first_column)
+            return;
+    if (map->ninvokes == map->invcap) {
+        int cap = map->invcap ? map->invcap * 2 : 8;
+        CxMacroInvoke *items =
+            (CxMacroInvoke *)cx_arena_alloc(a, sizeof(CxMacroInvoke) * (size_t)cap);
+        if (!items) return;
+        if (map->invokes && map->ninvokes)
+            memcpy(items, map->invokes,
+                   sizeof(CxMacroInvoke) * (size_t)map->ninvokes);
+        map->invokes = items;
+        map->invcap = cap;
+    }
+    map->invokes[map->ninvokes].name = cx_arena_strdup(a, name);
+    map->invokes[map->ninvokes].site = site;
+    map->invokes[map->ninvokes].def = def;
+    map->ninvokes++;
+}
+
+const CxSpan *cx_macro_map_find_invocation(const CxMacroMap *map, int line,
+                                           int column) {
+    if (!map) return NULL;
+    for (int i = 0; i < map->ninvokes; i++) {
+        CxSpan s = map->invokes[i].site;
+        if (line < s.first_line || line > s.last_line) continue;
+        if (line == s.first_line && column < s.first_column) continue;
+        if (line == s.last_line && column > s.last_column) continue;
+        return &map->invokes[i].def;
+    }
+    return NULL;
+}
+
+/* Render a captured token slice as source text (used to recover the concrete
+ * type bound to a `requires` metavariable). Groups are re-delimited. */
+static void render_tokens(CxBuf *b, MToken **toks, int n) {
+    for (int i = 0; i < n; i++) {
+        MToken *t = toks[i];
+        if (i) cx_buf_putc(b, ' ');
+        if (t->kind == MT_GROUP) {
+            cx_buf_putc(b, t->open);
+            render_tokens(b, t->kids, t->nkids);
+            cx_buf_putc(b, t->close);
+        } else if (t->text) {
+            cx_buf_puts(b, t->text);
+        }
+    }
+}
+
 static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span,
                        MTrans **tr, int ntr, MEnv *env, int index, Out *o,
                        CxMacroMap *map);
@@ -1128,15 +1218,15 @@ static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span,
                 tr[i + 2]->open == '{')
                 macro_map_add(a, map, bt->text, t->span);
             /* `$name::method` in a transcription is the public spelling of the
-             * internal `Name__method` name. Emit the joined name and record
-             * where `$name` came from so the LSP can jump into the macro. */
+             * internal `Name__method` name. Emit the joined name and record the
+             * `method` token so the LSP can jump to it in the macro body. */
             if (bt && i + 2 < ntr && tr[i + 1]->kind == T_TOKEN &&
                 tr[i + 1]->text && !strcmp(tr[i + 1]->text, "::") &&
                 tr[i + 2]->kind == T_TOKEN && tr[i + 2]->text &&
                 is_ident_start(tr[i + 2]->text[0])) {
                 char *name = cx_arena_printf(a, "%s__%s", bt->text,
                                              tr[i + 2]->text);
-                macro_map_add(a, map, name, t->span);
+                macro_map_add(a, map, name, tr[i + 2]->span);
                 out_text(o, name);
                 i += 2;
                 break;
@@ -1193,8 +1283,9 @@ static void name_push(CxArena *a, NameVec *v, char *name) {
 }
 
 /* Optional `requires $x: TraitA + TraitB, $y: TraitC` between the pattern group
- * and `=>`. The requirements are attached to metavariables; they are recorded
- * on the rule and will be checked in a later pass. */
+ * and `=>`. The requirements are attached to metavariables and recorded on the
+ * rule; at each invocation the concrete types bound to those metavariables are
+ * recorded on the `CxMacroMap` so sema can check conformance. */
 static int parse_requires(CxArena *a, CxDiagList *diags, MToken **toks, int n,
                           int *pi, MRule *rule) {
     int i = *pi;
@@ -1427,6 +1518,28 @@ static char *expand_invocation(CxArena *a, CxDiagList *diags, Macro *mac,
         if (match_seq(a, diags, rule->pat, rule->npat, args->kids, args->nkids,
                       &pos, &env) &&
             pos == args->nkids) {
+            /* Record the invocation itself so "go to definition" on its name
+             * lands in the `macro_rules!` definition. */
+            if (map) macro_invoke_add(a, map, mac->name, span, mac->span);
+            /* Checked `requires`: record the concrete type each constrained
+             * metavariable was bound to, so the semantic pass can verify that
+             * the type implements the required trait(s). */
+            if (map) {
+                for (int q = 0; q < rule->nreqs; q++) {
+                    MReq *rq = &rule->reqs[q];
+                    MBind *b = env_get(&env, rq->var);
+                    if (!b) continue;
+                    for (int ci = 0; ci < b->ncaps; ci++) {
+                        CxBuf tb;
+                        cx_buf_init(&tb);
+                        render_tokens(&tb, b->caps[ci], b->lens[ci]);
+                        for (int t = 0; t < rq->ntraits; t++)
+                            macro_req_add(a, map, tb.data ? tb.data : "",
+                                          rq->traits[t], span);
+                        cx_buf_free(&tb);
+                    }
+                }
+            }
             CxBuf buf;
             cx_buf_init(&buf);
             Out out = {&buf, 0};
@@ -1476,7 +1589,7 @@ static void scan_invocations(CxArena *a, CxDiagList *diags, MToken **toks,
             if (mac) {
                 MToken *args = toks[i + 2];
                 char *text = expand_invocation(a, diags, mac, args,
-                                               tok_span(toks[i]), map);
+                                               tok_span_full(toks[i]), map);
                 size_t end = args->end;
                 int skip = 2;
                 /* At item scope a bare `name!(…);` invocation owns its

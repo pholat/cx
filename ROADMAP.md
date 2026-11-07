@@ -1,10 +1,11 @@
 # Cx — Roadmap
 
-> **Known LSP issue (to fix):** jump-to-definition for the macro-generated
-> methods in `tests/golden/klib_list.cx` — `IntList::new`, `IntList::push`,
-> `IntList::pop`, `IntList::size`, `IntList::free` — does **not** land in
-> `macro_rules! define_list` yet. The generated-name → macro-origin map is
-> recorded, but the LSP `definition` path still needs fixing.
+> **Resolved (2026-11-07):** jump-to-definition for the macro-generated methods
+> in `tests/golden/klib_list.cx` / `klib_map.cx` (`IntList::new`, `IntMap::new`,
+> …) now lands in the `macro_rules!` definition: the LSP splits the
+> `Type::method` pair at the cursor, forms `Type__method`, and prefers the
+> recorded macro origin. `gd` on the macro *invocation* (`define_int_map!`) also
+> jumps to the `macro_rules!` definition.
 
 > Living document. Update **this file** (not `TECHNICAL.md`) when priorities or
 > the design direction change. `TECHNICAL.md` §8 is just a pointer here.
@@ -18,8 +19,10 @@
 Done: **C interop** (`raw { … }` + `#include` + `NAME!(…)` macro invocation
 passthrough), **static traits** (`trait`/`implements`), **attributes** (`#[…]`),
 **`macro_rules!`** (item + expression-position expansion, see `TECHNICAL.md` §4),
-and **trait requirements in macros** (`requires $x: Trait` / `requires $k: A + B`
-parsed and recorded on the rule; trait-member access is textual).
+and **checked trait requirements in macros** — `requires $x: Trait` /
+`requires $k: A + B` is parsed, recorded on the rule, and verified after the AST
+is built (a bound type that resolves to a struct must implement the required
+traits). See the Done list below.
 
 ## Ordered items
 
@@ -28,45 +31,57 @@ parsed and recorded on the rule; trait-member access is textual).
    container macros exercise trait-member access and reveal which traits (and
    associated types/constants) are actually needed.
    * **Progress:** `tests/golden/klib_list.cx` adds a macro-defined `IntList`
-     over `klist.h` — `KLIST_INIT!` passthrough, generated `kl_init_<Name>` /
+     over `klist.h` (`KLIST_INIT!` passthrough, generated `kl_init_<Name>` /
      `kl_pushp_<Name>` / `kl_shift_<Name>` / `kl_destroy_<Name>` wrappers, a
-     `void *` handle (Cx can't spell `klist_t(<Name>)`), and push/pop/size/free.
-     `tests/run.sh` now adds `submodules/klib` to the include path. The entry
-     points use the new **associated call** syntax: `IntList::new()`,
-     `IntList::push(&l, 10)`, `IntList::pop(&l, 0)`, `IntList::size(&l)`,
-     `IntList::free(&l)` (lowers to `IntList__new`/`__push`/…). The macro body
-     writes `$name::new`/`$name::push`/… (no `__`). The expander records those
-     names in the origin map, but **LSP jump-to-definition for these methods is
-     still broken** — see the known-issue note at the top.
-   * **Still needed:** `Map<K,V>`, a user-facing stdlib module, an element
-     free/RAII policy (the no-op callback leaks non-POD payloads), `requires`
-     bounds for key/value capabilities once checked `requires` lands,
+     `void *` handle, and push/pop/size/free). `tests/golden/klib_map.cx` adds
+     the `Map<K,V>` half: a macro-defined `IntMap` over `khash.h`
+     (`KHASH_MAP_INIT_INT!` plus a per-instantiation `CX_KHASH_MAP_HELPERS`
+     C macro that emits typed accessors over a `void *` handle, since Cx cannot
+     spell `khash_t(<Name>)`), with put/get/has/del/size/free.
+     `tests/golden/klib_bag.cx` adds an **element-typed** container over
+     `klist.h` (`define_bag!($name, $t) requires $t: Drop`) that stores
+     `$t *` in `void *` slots, so the concrete element type appears only in
+     Cx-generated code — this is the container that exercises the checked
+     `requires` bound on a struct element type. All use the **associated call**
+     syntax (`IntList::new()`, `IntMap::put(&m, k, v)`, …).
+     `tests/run.sh` adds `submodules/klib` to the include path.
+     Jump-to-definition for the container methods is **fixed** (top note).
+   * **Still needed:** an element free/RAII policy that actually invokes the
+     trait on teardown (klib's pool free callback is for internal nodes;
+     `klib_bag.cx` stores `$t *` and checks `requires $t: Drop` but does not yet
+     call `drop` on `free`), a user-facing stdlib module (blocked on macro
+     definitions crossing `import` boundaries), `requires` bounds for
+     primitive key/value capabilities (built-ins cannot implement a trait in the
+     current model, so a bound on e.g. `int` is skipped by the checker), and
      `.`-method calls (`l.push(…)`) — currently only `Type::func(&l, …)` works
-     because receiver local types aren't in the symbol table — and the **LSP
-     jump-to-definition fix** for `klib_list.cx` methods (top note).
-2. **Traits in macros — checked `requires`** — statically verify, after
-   expansion/parsing/sema, that the concrete type of each constrained
-   metavariable implements the required traits. First cut can be limited to
-   fragments whose type is syntactically known (`$t:ty`, named globals/locals)
-   until an expansion map links expanded nodes back to invocations. This is where
-   `requires` becomes a real conformance check rather than documentation.
-3. A paired `.hx`/`.cx` model (the `.c` includes its header and skips duplicate
+     because receiver local types aren't in the symbol table.
+2. A paired `.hx`/`.cx` model (the `.c` includes its header and skips duplicate
    declarations).
 
 Macro follow-ups (not blockers): hygiene for body-introduced identifiers,
 LSP indexing/hover for macro definitions, and a richer fragment matcher
 (backtracking beyond the current greedy `expr`/`ty` capture). Trait associated
 types/constants (needed by real generic containers) should be designed together
-with item 2.
+with the remaining `requires` work.
 
-> **Ordering rationale.** The cheap half of traits-in-macros (syntax + recorded
-> requirements + textual member access) is **implemented** so container macros
-> are written against the final spelling. The checked `requires` half comes after
-> the first containers, so the checker targets real usage (which traits, which
-> associated types, how bounds bind to multiple type parameters) instead of a
-> speculative design. The macro expander is textual and type-blind, so the check
-> is architecturally larger than the syntax/member-access work; deferring it
-> avoids blocking the container layer.
+> **Ordering rationale.** Traits in macros — syntax, recorded requirements,
+> textual member access, **and checked conformance** — are now implemented, so
+> container macros are written against the final spelling. The checked half is
+> deliberately a first cut: it verifies concrete types that resolve to a struct
+> and skips built-ins/unknowns. Deeper work (associated types/constants in
+> `requires`, resolving namespaced types, requirement bounds for primitive
+> elements) is folded into the container/`.hx` items above.
+
+## Done
+
+* **Traits in macros — checked `requires`**: after expansion/parse/sema, each
+  `requires` binding recorded at an invocation site is verified — the concrete
+  type bound to the metavariable must implement every required trait (and the
+  trait must exist). First cut: only struct types are checked; built-ins and
+  unknown types are skipped. Positive test: `tests/golden/traits_make_total.cx`
+  (`make_total!(total, Row)`; `Row: Iterable`). Negative test:
+  `tests/golden/macro_requires_fail.fail.cx` (`cx build` must fail; `run.sh`
+  handles `*.fail.cx`).
 
 ## Generics & macros (design note — under discussion)
 

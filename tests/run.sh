@@ -20,12 +20,29 @@ for src in "$root"/tests/golden/*.hx; do
         -fsyntax-only -x c "$tmp/$name.h"
 done
 
-# Sources.
+# Sources (`*.fail.cx` are negative tests, checked separately below).
 for src in "$root"/tests/golden/*.cx; do
     [ -e "$src" ] || continue
     name=$(basename "$src" .cx)
+    case "$name" in *.fail) continue ;; esac
     echo "== $name"
     "$cx" build "$src" -o "$tmp/$name.c"
+done
+
+# Negative tests: `cx build` must report an error and exit non-zero (e.g. a
+# checked-`requires` conformance failure).
+for src in "$root"/tests/golden/*.fail.cx; do
+    [ -e "$src" ] || continue
+    echo "== $(basename "$src") (expected error)"
+    if "$cx" build "$src" -o /dev/null 2>"$tmp/fail.err"; then
+        echo "expected '$src' to fail, but it succeeded" >&2
+        exit 1
+    fi
+    if ! grep -q "does not implement trait" "$tmp/fail.err"; then
+        echo "unexpected diagnostic for '$src':" >&2
+        cat "$tmp/fail.err" >&2
+        exit 1
+    fi
 done
 
 # Compile each generated source (no linkage; imports resolve via -I).

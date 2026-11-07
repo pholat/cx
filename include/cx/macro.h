@@ -26,15 +26,45 @@ typedef struct {
     CxSpan  span; /* source span in the macro definition */
 } CxMacroOrigin;
 
+/* One `requires` binding observed at an invocation site: the concrete type that
+ * a constrained metavariable was bound to, and a trait it must implement. The
+ * semantic pass checks these after the AST is built (checked `requires`). */
+typedef struct {
+    char   *type;  /* concrete type text bound to the metavariable, e.g. "Row" */
+    char   *trait; /* required trait name, e.g. "Iterable" */
+    CxSpan  span;  /* invocation site, for diagnostics */
+} CxMacroReq;
+
+/* One `name!( … )` invocation of a Cx `macro_rules!` macro: where it was written
+ * (`site`) and where the macro is defined (`def`). The LSP uses this so "go to
+ * definition" on the invocation name lands in the `macro_rules!` definition. */
+typedef struct {
+    char   *name; /* invocation name, e.g. "define_int_map" */
+    CxSpan  site; /* invocation site in the source (the name token) */
+    CxSpan  def;  /* `macro_rules!` definition span */
+} CxMacroInvoke;
+
 typedef struct CxMacroMap {
     CxMacroOrigin *items;
     int            len;
     int            cap;
+    CxMacroReq    *reqs;   /* checked-`requires` bindings (one per trait) */
+    int            nreqs;
+    int            reqcap;
+    CxMacroInvoke *invokes; /* `macro_rules!` invocations (site -> definition) */
+    int            ninvokes;
+    int            invcap;
 } CxMacroMap;
 
 const CxSpan *cx_macro_map_find(const CxMacroMap *map, const char *name);
 
-/* `map` is optional; when provided it receives generated-name origins. */
+/* The `macro_rules!` definition span for a macro invocation covering the
+ * 1-based (line, column), or NULL. */
+const CxSpan *cx_macro_map_find_invocation(const CxMacroMap *map, int line,
+                                           int column);
+
+/* `map` is optional; when provided it receives generated-name origins and the
+ * concrete types bound to `requires`-constrained metavariables. */
 char *cx_macro_expand(CxArena *arena, const char *src, size_t len,
                       const char *filename, CxDiagList *diags,
                       CxMacroMap *map);

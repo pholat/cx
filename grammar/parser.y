@@ -24,6 +24,13 @@ void yyerror(YYLTYPE *locp, CxParseCtx *ctx, void *scanner, const char *msg);
     cx_node_new(ctx->arena, (kind),                                          \
                 (CxSpan){(loc).first_line, (loc).first_column,               \
                          (loc).last_line, (loc).last_column})
+
+/* Overwrite a node's span from the current rule location. Used to widen a
+ * declarator node to cover its initializer so tools that descend the tree by
+ * span (the LSP) can reach the initializer expression. */
+#define SETSPAN(node, loc)                                                   \
+    ((node)->span = (CxSpan){(loc).first_line, (loc).first_column,           \
+                             (loc).last_line, (loc).last_column})
 %}
 
 %define api.pure full
@@ -366,10 +373,11 @@ one_decl:
       declarator
         { $$ = $1; }
     | declarator '=' expr
-        { $$ = $1; $$->init = $3; }
+        { $$ = $1; $$->init = $3; SETSPAN($$, (@$)); }
     | declarator '=' TYPE_NAME '(' arg_list ')'
         { $$ = $1; CxNode *call = MK(CX_NODE_EXPR_CALL, (@$));
-          call->name = $3; call->children = $5; $$->init = call; }
+          call->name = $3; call->children = $5; $$->init = call;
+          SETSPAN($$, (@$)); }
     ;
 
 block:

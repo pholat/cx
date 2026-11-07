@@ -15,6 +15,14 @@ int cx_lsp_word_at(const char *text, int line, int column, char *buf, size_t n);
  * used for completion. Returns the prefix length. */
 int cx_lsp_prefix_at(const char *text, int line, int column, char *buf, size_t n);
 
+/* If the 1-based (line, column) sits in a `Qualifier::member` pair (the cursor
+ * may be inside `member`, or just after `Qualifier::` with an empty member, for
+ * completion), copy the qualifier into `qual` and the member (possibly empty)
+ * into `member`, and return 1. Otherwise return 0. Used to resolve
+ * `Type::method` (which lowers to `Type__method`). */
+int cx_lsp_scope_at(const char *text, int line, int column, char *qual,
+                    size_t qn, char *member, size_t mn);
+
 /* Write an LSP `range` object ({start,end}) for a CxSpan (converted from the
  * 1-based, inclusive CxSpan to 0-based, end-exclusive LSP form). */
 void cx_lsp_write_range(CxBuf *out, CxSpan span);

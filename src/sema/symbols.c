@@ -1,5 +1,7 @@
 #include "cx/symbols.h"
 
+#include "cx/macro.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -328,6 +330,51 @@ static void infer_auto(BuildCtx *c, CxNode *n) {
     for (int i = 0; i < n->params.len; i++) infer_auto(c, n->params.items[i]);
 }
 
+static void type_base(const char *type, char *buf, size_t n);
+
+/* Does struct declaration `decl` contain an `implements <trait>` block? */
+static int struct_implements_trait(const CxNode *decl, const char *trait) {
+    if (!decl || !trait) return 0;
+    for (int i = 0; i < decl->children.len; i++) {
+        CxNode *m = decl->children.items[i];
+        if (m->kind == CX_NODE_IMPLEMENTS && m->name &&
+            !strcmp(m->name, trait))
+            return 1;
+    }
+    return 0;
+}
+
+/* Checked `requires`: for every requirement recorded at a `macro_rules!`
+ * invocation, verify that the concrete type bound to the constrained
+ * metavariable implements the required trait.
+ *
+ * First cut: only concrete types that resolve to a *struct* are checked;
+ * a built-in/unknown type (e.g. `int`, an unresolved imported type) cannot
+ * implement a trait in the current model, so it is left alone. The required
+ * trait itself is always checked for existence. */
+static void check_macro_requires(BuildCtx *c, CxNode *tu) {
+    if (!tu || !tu->macro_map) return;
+    CxMacroMap *map = tu->macro_map;
+    for (int i = 0; i < map->nreqs; i++) {
+        CxMacroReq *r = &map->reqs[i];
+        if (!r->type || !r->trait) continue;
+        if (!cx_sema_find_trait(c->table, r->trait)) {
+            cx_error(c->diags, r->span,
+                     "unknown trait '%s' in `requires` clause", r->trait);
+            continue;
+        }
+        char base[128];
+        type_base(r->type, base, sizeof base);
+        CxSymbol *st = cx_sema_find_struct(c->table, base);
+        if (!st) continue; /* not a struct: not checkable in this cut */
+        if (!struct_implements_trait(st->decl, r->trait))
+            cx_error(c->diags, r->span,
+                     "type '%s' bound to a `requires` metavariable does not "
+                     "implement trait '%s'",
+                     st->name, r->trait);
+    }
+}
+
 CxSymbolTable *cx_sema_build(CxArena *arena, CxNode *tu, CxDiagList *diags) {
     CxSymbolTable *table =
         (CxSymbolTable *)cx_arena_alloc(arena, sizeof(CxSymbolTable));
@@ -340,6 +387,7 @@ CxSymbolTable *cx_sema_build(CxArena *arena, CxNode *tu, CxDiagList *diags) {
     check_calls(&c, tu);
     check_implements(&c, tu);
     check_attrs(&c, tu);
+    check_macro_requires(&c, tu);
     return table;
 }
 

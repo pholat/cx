@@ -8,9 +8,13 @@
 > `const`, typedefs, multiple declarators, declaration-only headers, Cx-to-Cx
 > `import`, the **`raw { … }` escape hatch**, **`NAME!( … )` macro-invocation
 > passthrough**, **static traits** (`trait`/`implements`), and **`macro_rules!`**
-> (item + expression-position expansion with repetitions and `##`). Still
-> missing: the generics/container layer built *on* macro_rules (`List<T>`,
-> `Map<K,V>`), and some C-preprocessor/expression gaps listed below.
+> (item + expression-position expansion with repetitions and `##`). A
+> **macro_rules-based container layer** over klib now exists
+> (`tests/golden/klib_list.cx`, `tests/golden/klib_map.cx`), including **checked
+> `requires`** bounds. Still missing: a non-POD element free/RAII policy (klib's
+> C macros cannot name a mangled Cx struct type, so element/value types stay
+> primitive or `void *`), a user-facing stdlib module, and some
+> C-preprocessor/expression gaps listed below.
 
 klib (`submodules/klib`) is header-only and macro/pointer based. Writing
 `list.cx` / `map.cx` **without** the C bridge requires the language features

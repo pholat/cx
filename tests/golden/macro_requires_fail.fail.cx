@@ -1,0 +1,25 @@
+// Negative test for checked `requires`. The macro constrains `$t` to implement
+// `Iterable`, but `Plain` does not — `cx build` must report the conformance
+// error (run.sh treats `*.fail.cx` as expected-to-fail). Kept out of the normal
+// compile set so it does not need to produce valid C.
+
+trait Iterable {
+    int len(self);
+}
+
+macro_rules! make_total {
+    ($name:ident, $t:ty) requires $t: Iterable => {
+        int $name($t r) {
+            return 0;
+        }
+    };
+}
+
+namespace demo {
+
+    struct Plain {
+        int v;
+    };
+
+    make_total!(total, Plain);
+}

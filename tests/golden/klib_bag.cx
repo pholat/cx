@@ -1,0 +1,89 @@
+#include "klist.h"
+
+// klist's pool free callback (it applies to the internal nodes, not element
+// data). One shared no-op is enough here.
+raw {
+    static void cx_nofree(void *p) { (void)p; }
+}
+
+// A capability an element type must provide to be stored in a `Bag`.
+trait Drop {
+    void drop(self);
+}
+
+// A macro-defined, klib-backed bag of `$t *` elements. The element type is
+// constrained with `requires $t: Drop` — checked after expansion/sema, so a
+// non-conforming element type is a compile-time error. klist stores `void *`
+// slots, so the concrete element type appears only in Cx-generated code and
+// never inside the klib C macro (which cannot name a mangled Cx struct type).
+//
+// Public method spelling: `$name::new` / `::push` / `::size` / `::free`.
+macro_rules! define_bag {
+    ($name:ident, $t:ty) requires $t: Drop => {
+        KLIST_INIT!($name, void *, cx_nofree);
+
+        struct $name {
+            void *v;
+            int n;
+        };
+
+        $name $name::new() {
+            $name b;
+            b.v = kl_init_##$name();
+            b.n = 0;
+            return b;
+        }
+
+        void $name::push($name *b, $t *item) {
+            $t **slot = ($t **) kl_pushp_##$name(b->v);
+            *slot = item;
+            b->n += 1;
+        }
+
+        int $name::size($name *b) {
+            return b->n;
+        }
+
+        void $name::free($name *b) {
+            kl_destroy_##$name(b->v);
+            b->v = 0;
+            b->n = 0;
+        }
+    };
+}
+
+namespace demo {
+
+    struct Box {
+        int v;
+
+        Box(int x) {
+            v = x;
+        }
+
+        implements Drop {
+            void drop(self) {
+                self->v = 0;
+            }
+        }
+    };
+
+    // `Box` implements `Drop`, so the `requires` bound is satisfied. Invoking
+    // `define_bag!(Bag, Plain)` on a struct without `Drop` would be an error.
+    define_bag!(BoxBag, Box);
+
+    int run() {
+        Box b(5);
+
+        BoxBag bag = BoxBag::new();
+        BoxBag::push(&bag, &b);
+        int n = BoxBag::size(&bag);
+
+        /* Reach the trait method through the installed vtable. */
+        void (*dropfn)(void *) = b.Drop->drop;
+        dropfn(&b);
+
+        BoxBag::free(&bag);
+        return n;
+    }
+}
