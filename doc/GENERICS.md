@@ -5,17 +5,16 @@
 > pointer per trait, conformance checking), **C interop** (`raw { … }` +
 > `NAME!(…)` invocation passthrough), **attributes** (§5), and **`macro!` /
 > `macro_rules!`** (§6: item + expression-position token macros — see
-> [`MACRO_RULES.md`](./MACRO_RULES.md) and `TECHNICAL.md` §4). Still open:
-> template-like generics, `requires trait`, and macro hygiene/LSP indexing.
-> **Traits in macros is split** (`ROADMAP.md`): the `requires` clause bound
-> to metavariables (`requires $x: Iterable`, `requires $k: A + B, …`) and
-> trait-member access are **implemented** (requirements are parsed, validated
-> against the pattern and recorded, but not yet checked). The checked
-> conformance pass follows the container layer, once containers show which
-> traits and associated types are real.
-> `macro_rules!` was picked partly because C++-style templates are hard to
-> *read*; the direction is being revisited but a container layer can now be
-> built on the implemented macro expander. Linked from `ROADMAP.md`.
+> [`MACRO_RULES.md`](./MACRO_RULES.md) and `TECHNICAL.md` §4).
+> **Traits in macros**: the `requires` clause bound to metavariables
+> (`requires $x: Iterable`, `requires $k: A + B, …`) is parsed, validated and
+> **checked** (`TECHNICAL.md` §6); the `$x:method` fragment names a
+> `Trait::member` reference and expands to the vtable access. Still open:
+> template-like generics, trait associated types/constants, `requires` bounds
+> for primitives, and macro hygiene / LSP macro indexing. `macro_rules!` was
+> picked partly because C++-style templates are hard to *read*; the direction is
+> being revisited but the container layer is built on the implemented macro
+> expander. Linked from `ROADMAP.md`.
 
 ## 1. The problem
 
@@ -36,7 +35,7 @@ and they don't have to share one mechanism. The mistake would be to force one.
 | :-- | :-- | :-- |
 | **Templates** (monomorphize `List<T>` → `List__int`) | type parameters | typed, toolable; verbose to read in C++ |
 | **`macro_rules!`** | generativity | token-level; generates types *and* functions; poor tooling inside bodies |
-| **Traits** | static capability sets | **no inheritance, no vtables**; `trait`/`impl`; queried by macros/generics |
+| **Traits** | static capability sets | **no inheritance, no vtables**; `trait`/`implements`; queried by macros/generics |
 | **Attributes `#[…]`** | metadata / codegen | annotate structs, fields, functions with directives |
 | **Expression macros `name!(…)`** | generativity in expressions | `max!(a, b)` |
 
@@ -47,17 +46,17 @@ and they don't have to share one mechanism. The mistake would be to force one.
 * **`macro!` invocation** — function-like macros usable in *expression* position
   (in addition to item/statement position). Rust's `!` disambiguates a macro call
   from a function call unambiguously at the syntax level.
-* **`trait` / `impl`** — the interface/abstraction mechanism.
+* **`trait` / `implements`** — the interface/abstraction mechanism.
 
 C++ `template<…>` is deliberately *not* proposed as syntax — it's the readability
 problem that started this.
 
 ## 4. Traits (static, `implements` inside the struct)
 
-> **Implemented** (see `TECHNICAL.md` §4/§5). The design below matches the
-> lowering; one difference: because a call through the table needs a callee
-> expression and Cx has no postfix-call syntax yet, reach the table via a
-> function-pointer local (`int (*len)(void *) = r.T; len(&r);`).
+> **Implemented** (see `TECHNICAL.md` §4/§5). One difference: because a call
+> through the table needs a callee expression and Cx has no postfix-call syntax
+> yet, reach the table via a function-pointer local
+> (`int (*len)(void *) = r.T; len(&r);`), or use the `$x:method` macro fragment.
 
 Cx has **no inheritance and no class vtables**. A trait is a named set of
 required member signatures. A struct opts in with an `implements` block **inside**
@@ -139,9 +138,10 @@ macro_rules! sum_over {
 
 `requires $x: Iterable` restricts the macro to values whose type `implements
 Iterable`, and gives the expansion access to the trait's members. The clause is
-parsed and recorded; the **static check** is a later roadmap step. (Calls through
-the table still need a function-pointer local or helper until a postfix-call
-syntax exists.)
+parsed, recorded and **checked** (`TECHNICAL.md` §6). A `$x:method` fragment can
+name the method explicitly (`both_total!($x, A::a, B::b)`), which is checked and
+expands to `($x).A->a`. (Calls through the table still need a function-pointer
+local or helper until a postfix-call syntax exists.)
 
 ### Why this covers list/map
 
@@ -161,7 +161,7 @@ compatibility is a goal.
 * **Decided**: a single pointer to a shared **static per-type table** per trait
   (not per-instance function pointers) — smaller structs, C-idiomatic.
 * Table / member naming after mangling (`Iterable__vtable`, `Trait__method`).
-* Whether `requires trait` is the final spelling.
+* **Associated types/constants** (needed by real generic containers) — not yet.
 
 ## 5. Sketch: attributes
 
@@ -197,7 +197,7 @@ C attributes/`__attribute__((...))`. The LSP can surface them in hover.
 > statement and expression** position (the expander is textual, so the result is
 > re-parsed wherever it appears). See `TECHNICAL.md` §4 and `src/macro.c`.
 
-Beyond item `macro_rules!` (`MACRO_RULES.md`), allow invocation in expressions:
+Beyond item `macro_rules!` (`MACRO_RULES.md`), invocation works in expressions:
 
 ```cxc
 int m = max!(a, b);
@@ -212,7 +212,7 @@ it's the "generative in expressions" half of the macro story.
 A coherent story might be:
 
 1. **Attributes `#[…]`** first — metadata/codegen, cheap, useful immediately.
-2. **`macro!`** — token-level generativity for containers/boilerplate (`List<T>`
+2. **`macro!`** — token-level generativity for containers/boilerplate (`List`
    via `macro_rules!` generating klib instantiations), per `MACRO_RULES.md`.
 3. **Traits** — explicit `implements` blocks inside structs (static; one pointer
    per trait to a shared static per-type table) that macros can `requires trait`
@@ -220,7 +220,9 @@ A coherent story might be:
 4. **Templates** — *only if* tooling/type-error quality for generic containers
    turns out to be worth it; otherwise macro-generated containers suffice.
 
-klib stays the container backend in all current cases, but that may change to instead use the metaprogramming toolkit - and instead use klib as a base for the features required.
+klib stays the container backend in all current cases, but that may change to
+instead use the metaprogramming toolkit — and instead use klib as a base for the
+features required.
 
 ## 8. Recommendation (draft)
 
@@ -240,11 +242,11 @@ klib stays the container backend in all current cases, but that may change to in
 * `requires` spelling — **decided/implemented**: attach requirements to
   metavariables (`requires $x: Iterable`); multiple traits use `+`
   (`requires $k: Hashable + Equatable`), and multiple metavariables use commas.
-  Still open: how the check resolves the type of an `$x:expr` argument.
+  The `$x:method` fragment additionally names a `Trait::member` reference.
 * Conformance check: **exact signature match**, or member names only?
 * Trait member visibility/mangling: `Trait__method` vs `Type__Trait__method`.
 * Do traits carry **associated types/constants** (needed for real generic
-  containers, e.g. `Iterable::Item`)?
+  containers, e.g. `Iterable::Item`)? — not yet.
 * Does `self` in `implements` methods follow the existing field-shorthand
   (`self->`)?
 * Can a struct `implements` the same trait twice / two traits with a same-named

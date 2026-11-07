@@ -1,9 +1,10 @@
 # Integrating Cx into a C project
 
-Cx is a thin extension over C: you write `.cx` files using namespaces and RAII
-struct destructors, and `cx` transpiles them to **portable C** that any normal C
-toolchain (GCC, Clang, `arm-none-eabi-gcc`, …) compiles. There is no runtime, no
-special linker step, and no compiler fork — the output is plain `.c`.
+Cx is a thin extension over C: you write `.cx` files using namespaces, RAII
+struct destructors, static traits and macros, and `cx` transpiles them to
+**portable C** that any normal C toolchain (GCC, Clang, `arm-none-eabi-gcc`, …)
+compiles. There is no runtime, no special linker step, and no compiler fork —
+the output is plain `.c`.
 
 This guide covers:
 
@@ -12,19 +13,21 @@ This guide covers:
 3. Calling between C and Cx.
 4. Debugging and diagnostics.
 5. Current limitations.
-6. Adding the language server (next step).
+6. Adding the language server.
 
 ---
 
 ## 1. Producing C from Cx
 
-The CLI has three commands:
+The CLI has these commands:
 
 | Command | Purpose |
 | :--- | :--- |
-| `cx build <file.cx> [-o <file.c>]` | Transpile one file to C (stdout if `-o` is omitted) |
+| `cx build <file.cx\|file.hx> [-o <out>]` | Transpile one file to C (stdout if `-o` is omitted) |
+| `cx expand <file.cx>` | Print the source after `macro_rules!` expansion |
 | `cx dump <file.cx>` | Parse and print the AST (debugging) |
 | `cx lsp` | Run the language server on stdio |
+| `cx --version` | Print the version |
 
 Example:
 
@@ -42,6 +45,10 @@ namespace demo {
     struct Counter {
         int value;
 
+        Counter(int v) {
+            value = v;
+        }
+
         ~Counter() {
             reset(value);
         }
@@ -52,7 +59,7 @@ namespace demo {
     }
 
     void run() {
-        Counter c;
+        Counter c(1);
     }
 }
 ```
@@ -65,12 +72,19 @@ Output `counter.c` (simplified):
 struct demo__Counter;
 int  demo__reset(int v);
 void demo__run(void);
+void demo__Counter__ctor(struct demo__Counter *self, int v);
+void demo__Counter__dtor(struct demo__Counter *self);
 
 struct demo__Counter {
     int value;
 };
 
-static inline void demo__Counter__dtor(struct demo__Counter *self)
+void demo__Counter__ctor(struct demo__Counter *self, int v)
+{
+    self->value = v;
+}
+
+void demo__Counter__dtor(struct demo__Counter *self)
 {
     demo__reset(self->value);
 }
@@ -83,6 +97,7 @@ int demo__reset(int v)
 void demo__run(void)
 {
     struct demo__Counter c __attribute__((cleanup(demo__Counter__dtor)));
+    demo__Counter__ctor(&c, 1);
 }
 ```
 
@@ -97,7 +112,7 @@ Two transformations matter to callers:
 
 ### Compiler requirements
 
-The generated structors rely on the `cleanup` attribute, which is supported by
+The generated destructors rely on the `cleanup` attribute, which is supported by
 **GCC and Clang** (including embedded GCC toolchains). Compile the generated C
 with `-std=gnu11` or later. MSVC is not supported.
 
@@ -190,8 +205,7 @@ set(CMAKE_C_STANDARD 11)
 
 ## 3. Calling between C and Cx
 
-The generated C declares prototypes for **every function in the file**, so
-within one Cx file calls "just work" (and are emitted with the mangled name).
+Within one Cx file, calls "just work" (and are emitted with the mangled name).
 
 From hand-written C, call the mangled name. Given the example above, declare:
 
@@ -206,13 +220,11 @@ int main(void) {
 }
 ```
 
-Structs are visible by their mangled tag: `struct demo__Counter`. Because the
-transpiler does not (yet) emit a separate header, either re-declare the mangled
-prototypes in C, or keep the C/Cx boundary inside a single module.
-
-> **Note.** And a Cx file that wants to call into another Cx file currently has
-> no include/import mechanism — the preprocessor (`#include`) is ignored by the
-> parser. Multi-module Cx is the job of `.hx` header emission (see limitations).
+Structs are visible by their mangled tag: `struct demo__Counter`. For a stable
+C-facing seam, emit a **declaration-only header** with `cx build foo.hx -o foo.h`
+(include guard, typedefs, struct definitions, prototypes) and include that from
+C. A `.cx` can also pull in another module with `import "mod.hx";`, which parses
+the target's declarations and emits `#include "mod.h"`.
 
 Naming conventions to remember when crossing the boundary:
 
@@ -221,9 +233,10 @@ Naming conventions to remember when crossing the boundary:
 | `namespace a::b { void f(); }` | `a__b__f` |
 | `struct Foo` in global scope | `struct Foo` |
 | `struct Foo` in `ns` | `struct ns__Foo` |
-| `~Foo()` in `ns` | `ns__Foo__dtor` (internal, used by `cleanup`) |
+| `~Foo()` in `ns` | `ns__Foo__dtor` (used by `cleanup`) |
+| `Foo()` in `ns` | `ns__Foo__ctor` |
 
-`__` is the reserve separator: do not use `__` in your own Cx identifiers.
+`__` is the reserved separator: do not use `__` in your own Cx identifiers.
 
 ---
 
@@ -231,53 +244,53 @@ Naming conventions to remember when crossing the boundary:
 
 Two things make the generated code feel like first-class source:
 
-* **`#line` directives.** The transpiler injects `#line N "file.cx"` before every
-  declaration, so compiler warnings/errors and GDB backtraces point at your
+* **`#line` directives.** The transpiler injects `#line N "file.cx"` before
+  declarations, so compiler warnings/errors and GDB backtraces point at your
   `.cx` file and line — not the generated `.c`.
 * **Same diagnostics as the editor.** `cx build` and `cx lsp` share one parser,
   so what the editor flags is exactly what the build flags:
   `file.cx:11:5: error: syntax error, unexpected IDENT, expecting ';'`.
 
-To inspect a parse while integrating:
+To inspect a parse or an expansion during integration:
 
 ```
-cx dump src/counter.cx
+cx dump   src/counter.cx
+cx expand src/counter.cx
 ```
 
 ---
 
 ## 5. Current limitations
 
-Worth knowing before you wire Cx into a large project (these are roadmap items,
-not architectural blockers):
+Worth knowing before you wire Cx into a large project (roadmap items, not
+architectural blockers):
 
 * **Structs require a trailing `;`** (`};`), exactly like C/C++.
-* **No pointer/array declarators yet.** `T * x` is deferred until the semantic
-  layer can disambiguate it from the expression `a * b`.
-* **`.hx` headers are declaration-only.** `cx build foo.hx -o foo.h` emits a
-  guarded header (typedefs, struct definitions, prototypes) for use from C.
-  Cx-to-Cx `import` (so one `.cx` can use another's types) is not implemented
-  yet.
-* **No `#include`/imports in Cx.** Preprocessor lines are ignored by the lexer.
-* **Cross-namespace name resolution is partial.** A call is mangled only when the
-  bare function name is unambiguous in the file's symbol table.
-* **GCC/Clang only**, because of `cleanup`.
+* **No postfix method calls.** There is no `self`-style receiver inference yet,
+  so `Type::func(&x, …)` (lowering to `Type__func`) is the method spelling;
+  `.`-method calls (`x.push(…)`) are a roadmap item.
+* **No `.`/`->` member completion** in the LSP (needs receiver-type tracking).
+* **Macro definitions do not cross `import` boundaries** — each file is expanded
+  on its own, so an imported `.hx` cannot export a `macro_rules!` macro.
+* **`cleanup` is GCC/Clang only** (no MSVC).
+
+See [`REQUIRED_FEATURES.md`](./REQUIRED_FEATURES.md) for the low-level C gaps and
+[`ROADMAP.md`](./ROADMAP.md) for the ordered backlog.
 
 ---
 
-## 6. Adding the language server (next step)
+## 6. Adding the language server
 
-The `cx lsp` subcommand runs a JSON-RPC 2.0 server over stdio. It already
-completes the LSP handshake and advertises capabilities; the feature handlers
-(diagnostics, document symbols, definition, hover) are stubs that reuse the same
-AST and symbol table as the transpiler.
+The `cx lsp` subcommand runs a JSON-RPC 2.0 server over stdio. It shares the
+exact parser and symbol table as the transpiler, so diagnostics and navigation
+cannot diverge.
 
 ### Neovim (0.11+ / this machine's 0.12)
 
 Register the filetypes and point Neovim at the server:
 
 ```lua
--- ~/.config/nvim/after/ftplugin/  or your init.lua
+-- ~/.config/nvim/init.lua
 vim.filetype.add({ extension = { cx = "cx", hx = "cx" } })
 
 vim.lsp.config("cx", {
@@ -291,36 +304,29 @@ vim.lsp.enable("cx")
 
 Point `cmd` at the built binary (e.g. the absolute path to `./cx`, or a `cx` on
 `$PATH`). After rebuilding `cx`, a running server keeps the old binary in memory,
-so restart the client — `:LspRestart` (nvim-lspconfig) or reopen Neovim — to pick
-up the new build.
+so restart the client — `:LspRestart` — to pick up the new build.
 
 ### Syntax highlighting
 
-Cx highlighting is provided by a small Vim syntax file that layers the Cx-only
-constructs on top of the built-in C syntax (comments, strings, numbers, types and
-C keywords come from C):
+Cx highlighting is provided by a small Vim syntax file layered on the built-in C
+syntax (comments, strings, numbers, types and C keywords come from C):
 
-* `~/.config/nvim/syntax/cx.vim` — highlights `namespace` and struct destructors
-  (`~TypeName`), and the `::` scope separator.
+* `~/.config/nvim/syntax/cx.vim` — highlights `namespace`, struct
+  destructors (`~TypeName`), `::`, and the Cx keywords.
 * `~/.config/nvim/ftdetect/cx.vim` — maps `*.cx` and `*.hx` to the `cx`
   filetype.
 
 No tree-sitter parser is required.
 
-### What is implemented vs. next
+### What is implemented
 
 | Feature | Status |
 | :--- | :--- |
 | `initialize` / `shutdown` / `exit` | ✅ |
-| `textDocument/publishDiagnostics` | ✅ pushed on `didOpen` / `didChange` / `didClose` |
+| `textDocument/publishDiagnostics` | ✅ on `didOpen` / `didChange` / `didClose` |
 | `textDocument/documentSymbol` | ✅ namespaces, structs (+fields), functions, globals |
-| `textDocument/definition` | ✅ via the shared symbol table |
-| `textDocument/hover` | ✅ signature/type from the symbol table |
-| `textDocument/completion` | ✅ symbols + keywords (prefix-filtered) |
+| `textDocument/definition` / `declaration` | ✅ symbols, macro origins, `Type::method`, trait methods |
+| `textDocument/hover` | ✅ signatures + doc comments |
+| `textDocument/completion` | ✅ symbols + keywords (+ `Type::` members) |
 
-Diagnostics reuse the transpiler's parser: on every open/change the server parses
-the buffer, converts each `CxDiagnostic` into an LSP `Diagnostic` (1-based
-`CxSpan` → 0-based, end-exclusive ranges), and pushes
-`textDocument/publishDiagnostics`; `didClose` clears them. Because the parser is
-reentrant and arena-scoped, each request parses the current buffer cheaply and
-discards the tree — no global state, no second grammar to keep in sync.
+See `TECHNICAL.md` §3 for the resolution order and caveats.

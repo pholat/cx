@@ -10,14 +10,18 @@
 > passthrough**, **static traits** (`trait`/`implements`), and **`macro_rules!`**
 > (item + expression-position expansion with repetitions and `##`). A
 > **macro_rules-based container layer** over klib now exists
-> (`tests/golden/klib_list.cx`, `tests/golden/klib_map.cx`), including **checked
-> `requires`** bounds. Still missing: a non-POD element free/RAII policy (klib's
-> C macros cannot name a mangled Cx struct type, so element/value types stay
-> primitive or `void *`), a user-facing stdlib module, and some
-> C-preprocessor/expression gaps listed below.
+> (`tests/golden/klib_list.cx`, `tests/golden/klib_map.cx`, `klib_bag.cx`),
+> including **checked `requires`** bounds. Still missing: a non-POD element
+> free/RAII policy (klib's C macros cannot name a mangled Cx struct type, so
+> element/value types stay primitive or `void *`), a user-facing stdlib module,
+> and some C-preprocessor/expression gaps listed below.
+>
+> The hand-written bridge this list originally motivated
+> (`examples/klib/klib_bridge.{c,h}` + `list.cx`/`map.cx`) has been **removed**;
+> the working container examples live in `tests/golden/`.
 
-klib (`submodules/klib`) is header-only and macro/pointer based. Writing
-`list.cx` / `map.cx` **without** the C bridge requires the language features
+klib (`submodules/klib`) is header-only and macro/pointer based. Writing a
+list/map wrapper **without** the C bridge requires the language features
 below. `[L]` = needed by `klist.h`, `[M]` = needed by `khash.h`.
 
 Reference:
@@ -38,7 +42,7 @@ kh_destroy(32, h);
 | Feature | Notes |
 | :-- | :-- |
 | **`#include` passthrough** `[L][M]` | The lexer currently discards every `#…` line, so klib headers can't be pulled in. |
-| **Macro definition / expansion** `[L][M]` | **Cx `macro_rules!` is now implemented** for generative Cx (types + functions, repetitions, `##`); C function-like macros remain available via `NAME!( … )` passthrough. The klib container layer still needs to be written on top. |
+| **Macro definition / expansion** `[L][M]` | **Cx `macro_rules!` is now implemented** for generative Cx (types + functions, repetitions, `##`); C function-like macros remain available via `NAME!( … )` passthrough. The klib container layer is written on top (`tests/golden/klib_*.cx`). |
 | **Generic/parameterized types** `[L][M]` | klib instantiates a type + functions per element type. Cx needs generics, or must delegate expansion to the C preprocessor. |
 | **Token pasting `##` / stringizing `#`** `[L][M]` | Only if expansion happens in Cx rather than in the C preprocessor. |
 
@@ -117,10 +121,9 @@ Today Cx has only `return`, blocks and expression statements.
 
 ## 7. Shortcut (now available)
 
-The **raw-C escape hatch** is now implemented: `#include` passthrough, verbatim
+The **raw-C escape hatch** is implemented: `#include` passthrough, verbatim
 `raw { … }` blocks (file scope, struct member, statement), and `NAME!( … )`
 macro-invocation passthrough (e.g. `KLIST_INIT!(IntList, int, 0);` →
 `KLIST_INIT(IntList, int, 0);`). This unlocks klib today without the generics
 layer: put the klib glue in `raw` blocks and call macro-generated functions via
-named invocations. The hand-written bridge (`klib_bridge.c` + `list.cx`/`map.cx`,
-integer handles) still works and needs none of the newer features.
+named invocations.
