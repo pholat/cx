@@ -121,6 +121,51 @@ int cx_lsp_scope_at(const char *text, int line, int col, char *qual,
     return 1;
 }
 
+/* Start of the 1-based numbered `line` in `text`. */
+static const char *line_start_at(const char *text, int line) {
+    const char *p = text;
+    for (int ln = 1; *p && ln < line; ln++) {
+        while (*p && *p != '\n') p++;
+        if (*p == '\n') p++;
+    }
+    return p;
+}
+
+static int is_comment_line(const char *ls) {
+    while (*ls == ' ' || *ls == '\t') ls++;
+    return ls[0] == '/' && ls[1] == '/';
+}
+
+/* See nav.h. Collects the run of `//` lines directly above `line`. */
+int cx_lsp_doc_above(const char *text, int line, char *buf, size_t n) {
+    if (buf && n) buf[0] = '\0';
+    if (!text || line <= 1) return 0;
+
+    int j = line - 1;
+    while (j >= 1 && is_comment_line(line_start_at(text, j))) j--;
+    int first = j + 1;
+    if (first >= line) return 0;
+
+    for (int k = first; k < line; k++) {
+        const char *ls = line_start_at(text, k);
+        while (*ls == ' ' || *ls == '\t') ls++;
+        if (ls[0] == '/' && ls[1] == '/') ls += 2;
+        if (*ls == ' ') ls++;
+        const char *le = ls;
+        while (*le && *le != '\n') le++;
+        if (buf) {
+            size_t len = strlen(buf);
+            for (const char *c = ls; c < le && len + 1 < n; c++) buf[len++] = *c;
+            buf[len] = '\0';
+            if (k + 1 < line && len + 1 < n) {
+                buf[len++] = '\n';
+                buf[len] = '\0';
+            }
+        }
+    }
+    return first;
+}
+
 static int span_contains(CxSpan s, int line, int col) {
     if (s.first_line <= 0) return 0;
     if (line < s.first_line || line > s.last_line) return 0;

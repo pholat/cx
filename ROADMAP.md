@@ -75,13 +75,16 @@ with the remaining `requires` work.
 ## Done
 
 * **Traits in macros — checked `requires`**: after expansion/parse/sema, each
-  `requires` binding recorded at an invocation site is verified — the concrete
-  type bound to the metavariable must implement every required trait (and the
-  trait must exist). First cut: only struct types are checked; built-ins and
-  unknown types are skipped. Positive test: `tests/golden/traits_make_total.cx`
-  (`make_total!(total, Row)`; `Row: Iterable`). Negative test:
-  `tests/golden/macro_requires_fail.fail.cx` (`cx build` must fail; `run.sh`
-  handles `*.fail.cx`).
+  `requires` binding recorded at an invocation site is verified. A **type** bound
+  to the metavariable must implement every required trait (the trait must exist);
+  an **`ident`/`path`** binding that names no struct is a function and must name
+  one of the trait's methods (`requires $a: A` for the function `a` passed as
+  A's method). Built-ins/unknown types are skipped. Positive tests:
+  `tests/golden/traits_make_total.cx` (`make_total!(total, Row)`; `Row: Iterable`)
+  and `tests/golden/macro_requires.cx` (`make_both_total!(both_total, a, b)`;
+  `$a: A, $b: B`). Negative tests: `tests/golden/macro_requires_fail.fail.cx`
+  (struct) and `tests/golden/macro_requires_method_fail.fail.cx` (method); `cx
+  build` must fail on `*.fail.cx`.
 
 ## Generics & macros (design note — under discussion)
 

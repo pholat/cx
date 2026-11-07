@@ -36,6 +36,11 @@ CxSymbol *cx_sema_find_function(const CxSymbolTable *table, const char *name);
 CxSymbol *cx_sema_find_trait(const CxSymbolTable *table, const char *name);
 CxSymbol *cx_sema_find_symbol(const CxSymbolTable *table, const char *name);
 
+/* The `CX_NODE_TRAIT_METHOD` node of `method` in trait `trait`, or NULL. Used by
+ * the LSP to resolve a `Trait::member` reference to its declaration. */
+CxNode *cx_sema_find_trait_method(const CxSymbolTable *table, const char *trait,
+                                  const char *method);
+
 int       cx_sema_type_has_dtor(const CxSymbolTable *table, const char *type);
 CxSymbol *cx_sema_dtor_for(const CxSymbolTable *table, const char *type);
 

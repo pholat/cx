@@ -28,10 +28,14 @@ typedef struct {
 
 /* One `requires` binding observed at an invocation site: the concrete type that
  * a constrained metavariable was bound to, and a trait it must implement. The
- * semantic pass checks these after the AST is built (checked `requires`). */
+ * semantic pass checks these after the AST is built (checked `requires`). `frag`
+ * is the metavariable's fragment specifier (`ty`, `ident`, `path`, `expr`, …),
+ * which selects the check: a type fragment requires `implements`, an
+ * `ident`/`path` fragment names one of the trait's methods. */
 typedef struct {
     char   *type;  /* concrete type text bound to the metavariable, e.g. "Row" */
     char   *trait; /* required trait name, e.g. "Iterable" */
+    char   *frag;  /* fragment specifier bound in the pattern, e.g. "ident" */
     CxSpan  span;  /* invocation site, for diagnostics */
 } CxMacroReq;
 

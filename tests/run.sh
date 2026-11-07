@@ -38,7 +38,7 @@ for src in "$root"/tests/golden/*.fail.cx; do
         echo "expected '$src' to fail, but it succeeded" >&2
         exit 1
     fi
-    if ! grep -q "does not implement trait" "$tmp/fail.err"; then
+    if ! grep -qE "does not implement trait|does not name a method" "$tmp/fail.err"; then
         echo "unexpected diagnostic for '$src':" >&2
         cat "$tmp/fail.err" >&2
         exit 1

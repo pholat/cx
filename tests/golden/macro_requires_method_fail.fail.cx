@@ -1,0 +1,18 @@
+// Negative test for checked `requires` on a function metavariable. An
+// `ident`/`path` requirement that is not a struct must name a method of the
+// trait; `A`'s only method is `a`, so binding `$f` to `z` is an error.
+// (run.sh treats `*.fail.cx` as expected-to-fail.)
+
+trait A {
+    int a(self);
+}
+
+macro_rules! bad_method {
+    ($f:ident) requires $f: A => {
+        int $f(void *x) {
+            return 0;
+        }
+    };
+}
+
+bad_method!(z);

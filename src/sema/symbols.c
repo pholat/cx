@@ -344,34 +344,74 @@ static int struct_implements_trait(const CxNode *decl, const char *trait) {
     return 0;
 }
 
+/* Is `name` a single identifier (no qualifier, pointer or array decoration)? */
+static int is_bare_ident(const char *name) {
+    if (!name || !*name) return 0;
+    for (const char *p = name; *p; p++)
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+              (*p >= '0' && *p <= '9') || *p == '_'))
+            return 0;
+    return 1;
+}
+
+/* Does trait `tr` require a method named `name`? */
+static int trait_has_method(const CxSymbol *tr, const char *name) {
+    if (!tr || !tr->decl || !name) return 0;
+    for (int i = 0; i < tr->decl->children.len; i++) {
+        CxNode *m = tr->decl->children.items[i];
+        if (m->kind == CX_NODE_TRAIT_METHOD && m->name && !strcmp(m->name, name))
+            return 1;
+    }
+    return 0;
+}
+
 /* Checked `requires`: for every requirement recorded at a `macro_rules!`
- * invocation, verify that the concrete type bound to the constrained
- * metavariable implements the required trait.
+ * invocation, verify conformance.
  *
- * First cut: only concrete types that resolve to a *struct* are checked;
- * a built-in/unknown type (e.g. `int`, an unresolved imported type) cannot
- * implement a trait in the current model, so it is left alone. The required
- * trait itself is always checked for existence. */
+ * * A concrete type that resolves to a *struct* must have a matching
+ *   `implements` block (a built-in/unknown type cannot implement a trait in the
+ *   current model, so it is skipped).
+ * * An `ident`/`path` metavariable that names no struct is a *function* binding:
+ *   it must name one of the trait's required methods (e.g. `requires $a: A` for
+ *   the function `a` passed as A's method).
+ *
+ * The required trait itself is always checked for existence. */
 static void check_macro_requires(BuildCtx *c, CxNode *tu) {
     if (!tu || !tu->macro_map) return;
     CxMacroMap *map = tu->macro_map;
     for (int i = 0; i < map->nreqs; i++) {
         CxMacroReq *r = &map->reqs[i];
         if (!r->type || !r->trait) continue;
-        if (!cx_sema_find_trait(c->table, r->trait)) {
+        CxSymbol *tr = cx_sema_find_trait(c->table, r->trait);
+        if (!tr) {
             cx_error(c->diags, r->span,
                      "unknown trait '%s' in `requires` clause", r->trait);
             continue;
         }
+
         char base[128];
         type_base(r->type, base, sizeof base);
+
         CxSymbol *st = cx_sema_find_struct(c->table, base);
-        if (!st) continue; /* not a struct: not checkable in this cut */
-        if (!struct_implements_trait(st->decl, r->trait))
-            cx_error(c->diags, r->span,
-                     "type '%s' bound to a `requires` metavariable does not "
-                     "implement trait '%s'",
-                     st->name, r->trait);
+        if (st) {
+            if (!struct_implements_trait(st->decl, r->trait))
+                cx_error(c->diags, r->span,
+                         "type '%s' bound to a `requires` metavariable does not "
+                         "implement trait '%s'",
+                         st->name, r->trait);
+            continue;
+        }
+
+        int is_fn_frag = r->frag &&
+                         (!strcmp(r->frag, "ident") || !strcmp(r->frag, "path"));
+        if (is_fn_frag && is_bare_ident(r->type)) {
+            if (!trait_has_method(tr, r->type))
+                cx_error(c->diags, r->span,
+                         "'%s' does not name a method of trait '%s'", r->type,
+                         r->trait);
+            continue;
+        }
+        /* otherwise: not checkable in this cut (skip) */
     }
 }
 
@@ -419,6 +459,18 @@ CxSymbol *cx_sema_find_function(const CxSymbolTable *t, const char *name) {
 
 CxSymbol *cx_sema_find_trait(const CxSymbolTable *t, const char *name) {
     return find_by_kind(t, name, CX_NODE_TRAIT);
+}
+
+CxNode *cx_sema_find_trait_method(const CxSymbolTable *t, const char *trait,
+                                  const char *method) {
+    CxSymbol *tr = cx_sema_find_trait(t, trait);
+    if (!tr || !tr->decl || !method) return NULL;
+    for (int i = 0; i < tr->decl->children.len; i++) {
+        CxNode *m = tr->decl->children.items[i];
+        if (m->kind == CX_NODE_TRAIT_METHOD && m->name && !strcmp(m->name, method))
+            return m;
+    }
+    return NULL;
 }
 
 CxSymbol *cx_sema_find_symbol(const CxSymbolTable *t, const char *name) {

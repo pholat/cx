@@ -23,6 +23,11 @@ int cx_lsp_prefix_at(const char *text, int line, int column, char *buf, size_t n
 int cx_lsp_scope_at(const char *text, int line, int column, char *qual,
                     size_t qn, char *member, size_t mn);
 
+/* Collect the run of `//` comment lines immediately above the 1-based `line`
+ * into `buf` (comment markers and leading indentation stripped). Returns the
+ * 1-based line of the first collected comment line, or 0 if there is none. */
+int cx_lsp_doc_above(const char *text, int line, char *buf, size_t n);
+
 /* Write an LSP `range` object ({start,end}) for a CxSpan (converted from the
  * 1-based, inclusive CxSpan to 0-based, end-exclusive LSP form). */
 void cx_lsp_write_range(CxBuf *out, CxSpan span);

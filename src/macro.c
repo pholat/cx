@@ -698,6 +698,20 @@ static int pat_has_var(MPat **pats, int n, const char *name) {
     return 0;
 }
 
+/* The fragment specifier (`ident`, `ty`, `expr`, …) a metavariable is bound
+ * with in a pattern, or NULL. */
+static const char *pat_find_frag(MPat **pats, int n, const char *name) {
+    for (int i = 0; i < n; i++) {
+        MPat *p = pats[i];
+        if (p->kind == P_FRAG && p->text && !strcmp(p->text, name)) return p->frag;
+        if ((p->kind == P_GROUP || p->kind == P_REP) && p->kids) {
+            const char *f = pat_find_frag(p->kids, p->nkids, name);
+            if (f) return f;
+        }
+    }
+    return NULL;
+}
+
 typedef struct {
     char      *name;
     MRule     *rules;
@@ -866,6 +880,16 @@ static int frag_consume(MToken **in, int nin, int pos, const char *frag,
         }
         *count = p - pos;
         return *count > 0;
+    }
+    /* `Trait::member` — a qualified trait method reference (the sugar used to
+     * say where a function comes from). */
+    if (!strcmp(frag, "method")) {
+        if (pos + 2 < nin && in[pos]->kind == MT_IDENT &&
+            tok_is_punct(in[pos + 1], "::") && in[pos + 2]->kind == MT_IDENT) {
+            *count = 3;
+            return 1;
+        }
+        return 0;
     }
     if (!strcmp(frag, "ty")) {
         int p = pos;
@@ -1083,9 +1107,10 @@ const CxSpan *cx_macro_map_find(const CxMacroMap *map, const char *name) {
 }
 
 /* Record a `requires` binding: `type_text` was bound to a metavariable that must
- * implement `trait`. Duplicates (same type + trait) are ignored. */
+ * implement `trait` (or, for an `ident`/`path` fragment, name one of its
+ * methods). Duplicates (same type + trait) are ignored. */
 static void macro_req_add(CxArena *a, CxMacroMap *map, const char *type_text,
-                          const char *trait, CxSpan span) {
+                          const char *trait, const char *frag, CxSpan span) {
     if (!map || !type_text || !trait) return;
     for (int i = 0; i < map->nreqs; i++)
         if (map->reqs[i].type && map->reqs[i].trait &&
@@ -1104,6 +1129,7 @@ static void macro_req_add(CxArena *a, CxMacroMap *map, const char *type_text,
     }
     map->reqs[map->nreqs].type = cx_arena_strdup(a, type_text);
     map->reqs[map->nreqs].trait = cx_arena_strdup(a, trait);
+    map->reqs[map->nreqs].frag = frag ? cx_arena_strdup(a, frag) : NULL;
     map->reqs[map->nreqs].span = span;
     map->nreqs++;
 }
@@ -1164,9 +1190,9 @@ static void render_tokens(CxBuf *b, MToken **toks, int n) {
     }
 }
 
-static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span,
-                       MTrans **tr, int ntr, MEnv *env, int index, Out *o,
-                       CxMacroMap *map);
+static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span, MPat **pat,
+                       int npat, MTrans **tr, int ntr, MEnv *env, int index,
+                       Out *o, CxMacroMap *map);
 
 /* The single token captured by `$x` when it is an identifier, or NULL. Used to
  * form `$x::method` names and to record macro-definition origins. */
@@ -1192,9 +1218,9 @@ static void transcribe_var(Out *o, MBind *b, int index) {
     }
 }
 
-static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span,
-                       MTrans **tr, int ntr, MEnv *env, int index, Out *o,
-                       CxMacroMap *map) {
+static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span, MPat **pat,
+                       int npat, MTrans **tr, int ntr, MEnv *env, int index,
+                       Out *o, CxMacroMap *map) {
     for (int i = 0; i < ntr; i++) {
         MTrans *t = tr[i];
         switch (t->kind) {
@@ -1205,6 +1231,25 @@ static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span,
             break;
         case T_VAR: {
             MBind *b = env_get(env, t->text);
+            /* `$a:method` bound to `Trait::member`: emit the vtable member access
+             * `Trait->member` and require `member` to be a method of `Trait`. */
+            const char *frag = pat ? pat_find_frag(pat, npat, t->text) : NULL;
+            if (frag && !strcmp(frag, "method")) {
+                int ci = index >= 0 ? index : 0;
+                if (b && ci < b->ncaps && b->lens[ci] == 3 &&
+                    b->caps[ci][1] && tok_is_punct(b->caps[ci][1], "::")) {
+                    MToken *tr_tok = b->caps[ci][0];
+                    MToken *me_tok = b->caps[ci][2];
+                    if (tr_tok && me_tok) {
+                        macro_req_add(a, map, me_tok->text, tr_tok->text,
+                                      "ident", span);
+                        char *s = cx_arena_printf(a, "%s->%s", tr_tok->text,
+                                                  me_tok->text);
+                        out_text(o, s);
+                        break;
+                    }
+                }
+            }
             MToken *bt = single_ident_cap(b, index);
             /* `struct $name` defines a generated type: let definition on the
              * type name jump back to the `$name` in the macro. */
@@ -1239,7 +1284,8 @@ static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span,
             char close[2] = {t->close, '\0'};
             out_text(o, open);
             o->join = 1;
-            transcribe(a, diags, span, t->kids, t->nkids, env, index, o, map);
+            transcribe(a, diags, span, pat, npat, t->kids, t->nkids, env, index,
+                       o, map);
             out_text(o, close);
             break;
         }
@@ -1250,7 +1296,8 @@ static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span,
                     char sep[2] = {t->sep, '\0'};
                     out_text(o, sep);
                 }
-                transcribe(a, diags, span, t->kids, t->nkids, env, k, o, map);
+                transcribe(a, diags, span, pat, npat, t->kids, t->nkids, env, k,
+                           o, map);
             }
             break;
         }
@@ -1529,13 +1576,15 @@ static char *expand_invocation(CxArena *a, CxDiagList *diags, Macro *mac,
                     MReq *rq = &rule->reqs[q];
                     MBind *b = env_get(&env, rq->var);
                     if (!b) continue;
+                    const char *frag =
+                        pat_find_frag(rule->pat, rule->npat, rq->var);
                     for (int ci = 0; ci < b->ncaps; ci++) {
                         CxBuf tb;
                         cx_buf_init(&tb);
                         render_tokens(&tb, b->caps[ci], b->lens[ci]);
                         for (int t = 0; t < rq->ntraits; t++)
                             macro_req_add(a, map, tb.data ? tb.data : "",
-                                          rq->traits[t], span);
+                                          rq->traits[t], frag, span);
                         cx_buf_free(&tb);
                     }
                 }
@@ -1543,8 +1592,8 @@ static char *expand_invocation(CxArena *a, CxDiagList *diags, Macro *mac,
             CxBuf buf;
             cx_buf_init(&buf);
             Out out = {&buf, 0};
-            transcribe(a, diags, span, rule->tr, rule->ntr, &env, -1, &out,
-                       map);
+            transcribe(a, diags, span, rule->pat, rule->npat, rule->tr,
+                       rule->ntr, &env, -1, &out, map);
             char *result = cx_arena_strdup(a, buf.data ? buf.data : "");
             cx_buf_free(&buf);
             return result;

@@ -77,8 +77,11 @@ int cx_lsp_hover(CxBuf *out, const char *uri, const char *text, size_t len,
     CxMacroMap *map = tu ? tu->macro_map : NULL;
 
     CxSymbol *sym = NULL;
+    CxNode *tm = NULL; /* trait method (`Trait::member`) */
     char override[260];
     override[0] = '\0';
+    char tqual[128];
+    tqual[0] = '\0';
 
     char word[128];
     if (sema && cx_lsp_word_at(text, line + 1, character + 1, word, sizeof word))
@@ -94,16 +97,37 @@ int cx_lsp_hover(CxBuf *out, const char *uri, const char *text, size_t len,
             if (fn) {
                 sym = fn;
                 snprintf(override, sizeof override, "%s::%s", qual, member);
+            } else {
+                tm = cx_sema_find_trait_method(sema, qual, member);
+                if (tm) snprintf(tqual, sizeof tqual, "%s", qual);
             }
         }
     }
 
-    if (!sym) {
+    if (!sym && !tm) {
         cx_buf_puts(out, "null");
     } else {
         CxBuf md;
         cx_buf_init(&md);
-        render_symbol(&md, map, sym, override[0] ? override : NULL);
+        if (tm) {
+            /* Lead with the `//` doc comment above the declaration, then the
+             * signature (`Trait::member`). */
+            char doc[1024];
+            if (cx_lsp_doc_above(text, tm->span.first_line, doc, sizeof doc) &&
+                doc[0])
+                cx_buf_printf(&md, "%s\n\n", doc);
+            cx_buf_printf(&md, "%s %s::%s(", tm->type ? tm->type : "void",
+                          tqual, tm->name ? tm->name : "");
+            for (int i = 0; i < tm->params.len; i++) {
+                CxNode *pm = tm->params.items[i];
+                if (i) cx_buf_puts(&md, ", ");
+                if (pm->type) cx_buf_printf(&md, "%s ", pm->type);
+                cx_buf_puts(&md, pm->name ? pm->name : "");
+            }
+            cx_buf_putc(&md, ')');
+        } else {
+            render_symbol(&md, map, sym, override[0] ? override : NULL);
+        }
         cx_buf_puts(out, "{\"contents\":{\"kind\":\"markdown\",\"value\":");
         cx_json_write_string(out, md.data ? md.data : "");
         cx_buf_puts(out, "}}");

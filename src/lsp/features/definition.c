@@ -84,6 +84,21 @@ int cx_lsp_definition(CxBuf *out, const char *uri, const char *text, size_t len,
             found = fn->decl->span;
             found_file = fn->file ? fn->file : uri;
             have = 1;
+        } else {
+            /* `Trait::member`: jump to the trait method declaration (including a
+             * preceding `//` doc comment, if any). */
+            CxNode *tm = cx_sema_find_trait_method(sema, qual, member);
+            if (tm) {
+                found = tm->span;
+                char doc[512];
+                int dl = cx_lsp_doc_above(text, found.first_line, doc,
+                                          sizeof doc);
+                if (dl > 0) {
+                    found.first_line = dl;
+                    found.first_column = 1;
+                }
+                have = 1;
+            }
         }
     }
 

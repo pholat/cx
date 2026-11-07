@@ -1,4 +1,5 @@
 trait A {
+    // some doc for a
     int a(self);
 }
 
@@ -6,17 +7,28 @@ trait B {
     int b(self);
 }
 
-// `requires` binds trait requirements to metavariables. This is parsed and
-// recorded on the rule (the conformance check is a later step); the body can
-// already reach the trait members through their fields (`x.A`, `x.B`).
-macro_rules! require_both {
-    ($x:expr) requires $x: A + B => {
-        both_total(&($x), ($x).A->a, ($x).B->b)
+// `both_total!` is the macro form of the old helper. `$a`/`$b` are
+// `Trait::member` method references (`A::a`, `B::b`): the qualification makes
+// the origin explicit, is checked (the member must belong to the trait) and
+// expands to the vtable access `Trait->member`. Cx has no postfix-call syntax
+// (a function pointer cannot be called `fp(x)`), so the two method pointers are
+// handed to a small function that performs the calls.
+macro_rules! both_total {
+    ($x:expr, $a:method, $b:method) => {
+        both_total_apply(&($x), ($x).$a, ($x).$b)
     };
 }
 
-int both_total(void *obj, int (*a)(void *), int (*b)(void *)) {
+int both_total_apply(void *obj, int (*a)(void *), int (*b)(void *)) {
     return a(obj) + b(obj);
+}
+
+// `require_both!` requires the object's type to implement both traits, then
+// calls `both_total!` with the explicit `A::a` / `B::b` method references.
+macro_rules! require_both {
+    ($x:expr) requires $x: A + B => {
+        both_total!($x, A::a, B::b)
+    };
 }
 
 namespace demo {
