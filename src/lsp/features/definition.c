@@ -102,6 +102,73 @@ int cx_lsp_definition(CxBuf *out, const char *uri, const char *text, size_t len,
         }
     }
 
+    char recv[128], dmem[128];
+    if (!have && sema &&
+        cx_lsp_dot_at(text, line + 1, character + 1, recv, sizeof recv, dmem,
+                      sizeof dmem) &&
+        dmem[0]) {
+        /* `recv.method` -> `Type__method` (the receiver's type resolves it);
+         * otherwise the receiver may expose a field, a trait vtable pointer, or
+         * a trait method through the pointer (`recv.Trait->method`). */
+        char base[128];
+        const char *bt =
+            cx_lsp_receiver_base(arena, tu, sema, text, uri, line + 1,
+                                 character + 1, recv, base, sizeof base);
+        if (bt) {
+            char full[260];
+            snprintf(full, sizeof full, "%s__%s", bt, dmem);
+            const CxSpan *origin = map ? cx_macro_map_find(map, full) : NULL;
+            CxSymbol *fn = cx_sema_find_function(sema, full);
+            if (origin) {
+                found = *origin;
+                have = 1;
+            } else if (fn && fn->decl) {
+                found = fn->decl->span;
+                found_file = fn->file ? fn->file : uri;
+                have = 1;
+            }
+        }
+        if (!have && bt) {
+            CxSymbol *st = cx_sema_find_struct(sema, bt);
+            CxNode *decl = st ? st->decl : NULL;
+            for (int i = 0; decl && i < decl->children.len && !have; i++) {
+                CxNode *m = decl->children.items[i];
+                if (m->kind == CX_NODE_VAR_DECL) {
+                    for (int k = 0; k < m->children.len && !have; k++) {
+                        CxNode *d = m->children.items[k];
+                        if (d->name && !strcmp(d->name, dmem)) {
+                            found = d->span;
+                            found_file = st->file ? st->file : uri;
+                            have = 1;
+                        }
+                    }
+                } else if (m->kind == CX_NODE_IMPLEMENTS && m->name &&
+                           !strcmp(m->name, dmem)) {
+                    CxSymbol *tr = cx_sema_find_trait(sema, m->name);
+                    if (tr && tr->decl) {
+                        found = tr->decl->span;
+                        found_file = tr->file ? tr->file : uri;
+                        have = 1;
+                    }
+                }
+            }
+        }
+        if (!have) {
+            CxNode *tmd = cx_sema_find_trait_method(sema, recv, dmem);
+            if (tmd) {
+                found = tmd->span;
+                char doc[512];
+                int dl = cx_lsp_doc_above(text, found.first_line, doc,
+                                          sizeof doc);
+                if (dl > 0) {
+                    found.first_line = dl;
+                    found.first_column = 1;
+                }
+                have = 1;
+            }
+        }
+    }
+
     if (!have && map) {
         const CxSpan *def =
             cx_macro_map_find_invocation(map, line + 1, character + 1);

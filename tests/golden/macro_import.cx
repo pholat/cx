@@ -1,0 +1,14 @@
+import "macro_lib.hx";
+
+namespace demo {
+
+    // `define_pair!` lives in the imported `.hx`: the expander collects
+    // `macro_rules!` definitions from imported files before expanding this one,
+    // so the macro crosses the `import` boundary.
+    define_pair!(IntPair, int);
+
+    int run() {
+        IntPair p = IntPair_make(3, 4);
+        return p.first + p.second;
+    }
+}

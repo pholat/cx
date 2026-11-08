@@ -52,6 +52,41 @@ static int has_ext(const char *path, const char *ext) {
     return n >= m && strcmp(path + n - m, ext) == 0;
 }
 
+/* The basename of `path` with its final extension replaced by `newext`
+ * (e.g. `/a/b/foo.cx` + `.h` -> `foo.h`). Returned in malloc'd storage. */
+static char *replace_ext(const char *path, const char *newext) {
+    const char *base = path;
+    for (const char *p = path; *p; p++)
+        if (*p == '/') base = p + 1;
+    size_t n = strlen(base);
+    const char *dot = strrchr(base, '.');
+    size_t stem = dot ? (size_t)(dot - base) : n;
+    size_t elen = strlen(newext);
+    char *out = (char *)malloc(stem + elen + 1);
+    if (!out) return NULL;
+    memcpy(out, base, stem);
+    memcpy(out + stem, newext, elen + 1);
+    return out;
+}
+
+/* For a `.cx`, the sibling `.hx` path (relative to the source directory). */
+static char *sibling_hx(const char *path) {
+    size_t n = strlen(path);
+    if (n < 3 || strcmp(path + n - 3, ".cx") != 0) return NULL;
+    char *out = (char *)malloc(n + 1);
+    if (!out) return NULL;
+    memcpy(out, path, n - 3);
+    memcpy(out + n - 3, ".hx", 4); /* copies the terminating NUL too */
+    return out;
+}
+
+static int file_exists(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fclose(f);
+    return 1;
+}
+
 /* `cx expand <file>`: print the source after `macro_rules!` expansion (useful
  * for debugging a macro). No semantic checks are run. */
 static int run_expand(const char *in) {
@@ -90,6 +125,23 @@ static int run_transpile(const char *in, const char *out, int dump) {
 
     CxNode *tu = cx_parse(arena, src, len, in, &diags);
     int rc = 0;
+
+    /* `.cx` / `.hx` pairing: if a sibling `.hx` exists, the generated `.c`
+     * includes its header and skips the declarations that header already
+     * provides (see cx_emit_c). Keep the 1:1 basename mapping. */
+    if (tu && !header) {
+        char *hx = sibling_hx(in);
+        if (hx) {
+            if (file_exists(hx)) {
+                char *inc = replace_ext(in, ".h");
+                if (inc) {
+                    tu->paired_header = cx_arena_strdup(arena, inc);
+                    free(inc);
+                }
+            }
+            free(hx);
+        }
+    }
 
     if (dump) {
         cx_node_dump(tu, stdout, 0);

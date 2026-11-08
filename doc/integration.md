@@ -266,12 +266,25 @@ Worth knowing before you wire Cx into a large project (roadmap items, not
 architectural blockers):
 
 * **Structs require a trailing `;`** (`};`), exactly like C/C++.
-* **No postfix method calls.** There is no `self`-style receiver inference yet,
-  so `Type::func(&x, …)` (lowering to `Type__func`) is the method spelling;
-  `.`-method calls (`x.push(…)`) are a roadmap item.
-* **No `.`/`->` member completion** in the LSP (needs receiver-type tracking).
-* **Macro definitions do not cross `import` boundaries** — each file is expanded
-  on its own, so an imported `.hx` cannot export a `macro_rules!` macro.
+* **Postfix method calls are a first cut.** `x.push(…)` / `p->get(…)` resolve the
+  receiver's type from the enclosing function's parameters and locals (block
+  scoped; `self` inside a constructor/destructor/`implements` body is the
+  enclosing struct) and lower to `Type__push(&x, …)`; an unresolved receiver
+  falls back to `x.push(…)` verbatim. Chained `a.b().c()` and computed receivers
+  are not covered yet, so `Type::func(&x, …)` (lowering to `Type__func`) remains
+  the fully general spelling.
+* **`.` member completion covers methods and fields.** After `recv.`/`recv->` the
+  LSP offers the receiver type's instance methods, the struct's **fields** and its
+  trait vtable pointers (read from the struct's AST). Hover resolves
+  `recv.method`/`recv.field`, and `gd` jumps to the method/field/trait
+  declaration (or the method's macro origin). Same-file `documentHighlight`,
+  `references` and `rename` are **lexical** (a rename rewrites every matching
+  word in the file); cross-file `references` and a binding-aware `rename` are not
+  implemented.
+* **Macros cross `import` boundaries.** An imported `.hx` may export a
+  `macro_rules!` macro: the expander collects definitions from imported files
+  (recursively) before expanding the importer, so a shared container `std` can be
+  built from `.hx` modules. (Hygiene is still not implemented.)
 * **`cleanup` is GCC/Clang only** (no MSVC).
 
 See [`REQUIRED_FEATURES.md`](./REQUIRED_FEATURES.md) for the low-level C gaps and

@@ -1,0 +1,33 @@
+// Uses the container macros from the `std_*.hx` modules: macros cross `import`
+// boundaries, so the container definitions live in reusable module files instead
+// of being repeated in every source. Each imported header also carries the C
+// context it needs (`#include "klist.h"` / `"khash.h"`, the pool free callback,
+// and the khash accessor macro), so nothing else is needed here.
+import "std_list.hx";
+import "std_map.hx";
+
+namespace demo {
+
+    define_list!(IntList, int);
+    define_int_map!(IntMap, int);
+
+    int run() {
+        IntList l = IntList::new();
+        l.push(1);
+        l.push(2);
+        l.push(3);
+
+        int a = l.pop(0);
+        int n = l.size();
+        l.free();
+
+        IntMap m = IntMap::new();
+        m.put(1, a);
+        m.put(2, n);
+        int b = m.get(1, 0);
+        int c = m.get(2, 0);
+        m.free();
+
+        return a + n + b + c;
+    }
+}

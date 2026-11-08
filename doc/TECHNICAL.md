@@ -54,7 +54,8 @@ cx/
 │   ├── sema/   symbols.c scope.c raii.c
 │   ├── codegen/ mangle.c line_map.c c_emitter.c
 │   ├── lsp/    json.{h,c} lsp_internal.h transport.c documents.c server.c
-│   │           features/{diagnostics,symbols,definition,hover,completion,nav}.c
+│   │           features/{diagnostics,symbols,definition,hover,completion,
+│   │                     signature,occurrences,nav}.c
 │   └── cli/    main.c
 ├── tests/ run.sh  golden/*.cx
 ├── examples/ hello.cx vec.cx   # (the klib bridge example was removed — see tests)
@@ -95,8 +96,15 @@ the klib-backed container tests.
 `cx lsp` speaks JSON-RPC 2.0 over stdio (Content-Length framing). Implemented:
 `initialize`/`initialized`/`shutdown`/`exit`; `textDocument/publishDiagnostics`
 on `didOpen`/`didChange`/`didClose` (full sync, `textDocumentSync: 1`); and
-`documentSymbol`, `definition`, `declaration`, `hover`, and `completion` (each
-reparses the stored document through the shared parser + symbol table).
+`documentSymbol`, `definition`, `declaration`, `hover`, `completion`,
+`signatureHelp`, `documentHighlight`, `references` and `rename`. The semantic
+ones (everything but the last three) reparse the stored document through the
+shared parser + symbol table; `documentHighlight` / `references` / `rename` are
+lexical — they scan the same file for whole-word occurrences of the identifier
+under the cursor, skipping comments and string/char literals (`references`
+answers `[]` when there are none, `documentHighlight` reports `kind: 1`, and
+`rename` returns a `WorkspaceEdit` whose single-file `changes` map lists one
+`{range, newText}` per occurrence).
 `definition` follows symbols into imported files (the URI comes from the
 symbol's source file); `completion` offers symbol-table names (functions,
 structs, globals) plus keywords, filtered by the typed prefix. For symbols
@@ -107,23 +115,51 @@ it. Resolution order: (1) the word under the cursor through the symbol table
 lowered to `Type__method` (a generated function) or resolved as a
 `Trait::method` reference to the trait method declaration. So `gd` on `new` in
 `IntMap::new()` jumps to the `new` token in the macro body, and `gd` on `a` in
-`A::a` jumps to `a`'s declaration in `trait A`; (3) a `macro_rules!` invocation
-at the cursor (`cx_macro_map_find_invocation`), so `gd` on `define_int_map!`
-jumps to the `macro_rules!` definition; (4) the innermost named AST node
-(`cx_lsp_node_at` walks the tree unconditionally and matches on the node's own
-span, so a too-small ancestor span never hides a descendant). Hover resolves the
-same `Type::method`/`Trait::method` pair and renders the full signature
+`A::a` jumps to `a`'s declaration in `trait A`; (3) a `recv.method` /
+`recv->method` member access — the receiver's type (a local/parameter, or a
+global) resolves it to `Type__method`, else to the struct **field**'s
+declarator, a **trait vtable pointer** (jumping to the trait), or a trait method
+through the pointer (`recv.Trait->method`); (4) a
+`macro_rules!` invocation at the cursor (`cx_macro_map_find_invocation`), so
+`gd` on `define_int_map!` jumps to the `macro_rules!` definition; (5) the
+innermost named AST node (`cx_lsp_node_at` walks the tree unconditionally and
+matches on the node's own span, so a too-small ancestor span never hides a
+descendant). Hover resolves the same `Type::method`/`Trait::method` pair plus a
+`recv.method` member (via the receiver's type) and renders the full signature
 (`ret Type::method(params)`), preceded by the `//` doc comment above the
-declaration (`cx_lsp_doc_above`); completion after `Type::` lists the generated
-members as `Type::method` (with `insertText` = the bare member), and the general
-list shows macro-generated `A__B` names as `A::B`. `positionEncoding` is not
-negotiated (columns are byte offsets).
+declaration (`cx_lsp_doc_above`); a `recv.field` hovers as `<type> <field>`, a
+trait pointer as ``trait `T` (vtable pointer on `S`)``, and a local/parameter as
+`<type> <name>`. Completion after `Type::` lists the generated members as
+`Type::method` (with `insertText` = the bare member), completion after
+`recv.`/`recv->` lists the receiver type's members — its instance methods
+(`Type__member`, resolved from `s->decl`), the struct's **fields** and its
+**trait vtable pointers** — and `recv.Trait->` lists the trait's required
+methods. The general list shows macro-generated `A__B` names as `A::B`.
+`signatureHelp`
+(`(`/`,` triggers) finds the call's argument list (`cx_lsp_call_open_at`),
+resolves the callee (`f`, `Type::method`, `recv.method`) to `Type__method`, and
+renders the parameter list with the active parameter — dropping a `.`-method's
+hidden receiver so the index maps to the typed arguments. `positionEncoding` is
+not negotiated (columns are byte offsets).
+
+The receiver's type is resolved by `cx_lsp_receiver_base` (in `nav.c`): it uses
+`cx_sema_receiver_type` (the enclosing body's parameters and the locals visible
+at the cursor, honouring block scope, else a global) and, when that fails because
+the live text is an **incomplete expression at the cursor** (typing `list.` makes
+the enclosing function fail to reduce, so the local's declaration is not in the
+AST), it reparses a copy of the document with the cursor's line completed by
+`__cx;` — the declarations *before* the cursor are untouched, so `list`'s
+declared type is recovered. `cx_sema_receiver_type` also types `self` (the
+enclosing struct) inside a constructor/destructor/`implements` method body, so
+`self.` completes/hovers/`gd`s the same way.
 
 Completion caveats: plain **prefix** match (no fuzzy matching or auto-import);
 only symbol-table entries are offered — **locals/parameters aren't in the
-table**, so they don't appear; trigger characters are `.`/`:` and `Type::`
-members are offered, but struct members are not completed after a `.`/`->` yet
-(that needs receiver-type tracking).
+table**, so the *general* list omits them (they do drive `recv.` method
+completion via `cx_lsp_receiver_base`); trigger characters are `.`/`:`/`>`, and
+`recv.`/`recv->` offers the receiver type's **methods, fields and trait
+pointers** (fields are read straight from the struct's AST declaration), while
+`recv.Trait->` offers the trait's methods.
 
 Neovim (this machine, 0.12): config lives in `~/.config/nvim/init.lua`
 (`vim.lsp.config`/`vim.lsp.enable`, prefers the dev build `~/workspace/cx/cx`),
@@ -169,14 +205,22 @@ the old binary in memory.
 * Multiple declarators share one type: `int a, b = 2, c;` (each with its own
   optional initializer). A struct field list may do the same: `int x, y;`.
 * `auto x = expr;` infers the type from the initializer (call return type,
-  constructor call, literal, paren, cast, or a known symbol's type).
+  constructor call, literal, string, paren, cast, a function parameter, or a
+  known symbol's type); a comparison/logical operator infers as `int`.
+* `auto` may also be a **function return type**: `auto f(params) { return …; }`
+  infers the return type from the first `return expr;` in the body and rewrites
+  the function's symbol, so callers — including `auto` at the call site — see the
+  resolved type. Inference is conservative ("where easily possible"): locals are
+  not in the symbol table yet, so a returned local cannot be inferred.
 * A bare identifier that names a function is emitted with its mangled name, so
   Cx functions can be passed as callbacks.
 
 ### Expressions
 `+ - * / %`, comparisons `== != < > <= >=`, logical `&& || !`, bitwise
 `& | ^ ~ << >>`, increment/decrement `++ --` (prefix and postfix), assignment
-`=` and compound `+= -= *= /= %=`, unary `-`, casts `(T)expr`, `sizeof(...)` /
+`=` and compound `+= -= *= /= %=`, the conditional `cond ? a : b`
+(right-associative; binds tighter than `=` and looser than `||`), unary `-`,
+casts `(T)expr`, `sizeof(...)` /
 `sizeof expr`, field access `.` and `->`, subscript `[]`, address-of `&`,
 dereference `*`, calls, parentheses.
 
@@ -184,11 +228,24 @@ dereference `*`, calls, parentheses.
 lowers to a call to the function named `Type__func` (resolved/mangled by sema
 like any other call), e.g. `IntList::new()`, `IntList::push(&l, 10)`. This gives
 container entry points a method-like spelling without receiver-type inference.
-`.`-method calls (`l.push(…)`) are not supported yet: the symbol table does not
-track the receiver's local type; `Type::func(&l, …)` is the current form.
+
+**`.`/`->` method calls** (`l.push(…)`): `recv.method(args)` and
+`recv->method(args)` resolve the receiver's type from the enclosing function's
+parameters and locals (`recv` may also be a global) and lower to the associated
+call `Type__method(&recv, args)` — a pointer receiver is passed through unchanged
+(`p->method(x)` → `Type__method(p, x)`). So `l.push(10)` becomes
+`IntList__push(&l, 10)` and `p.get_x()` becomes `Point__get_x(&p)`. Resolution is
+a sema pass (`resolve_receivers`); when the receiver cannot be typed the call is
+emitted verbatim as `recv.method(args)`, so a C function-pointer field
+(`obj.cb(x)`) still works. Inside a constructor/destructor/`implements` method
+body `self` is bound to the enclosing struct (as a pointer), so
+`self.method(x)` lowers to `Type__method(self, x)`. The environment is
+**block-scoped**: a local declared in an inner block shadows an outer one and is
+popped at the block's `}`, so the outer binding is visible again afterwards.
 
 ### Statements
 Expression statements, `return`, blocks, `if`/`else`, `while`,
+`do … while (cond);` (a single-statement body is emitted wrapped in braces),
 `for (init; cond; incr)` (each clause optional; no declaration-in-init),
 `break`, `continue`, `switch`/`case`/`default`, `goto` and labels (`name:`).
 
@@ -301,10 +358,13 @@ make_vec!(IntVec, int);          /* -> struct IntVec { … }; int IntVec_first( 
 * Definitions are removed from the parsed source. Definitions are hoisted for
   resolution (an invocation may precede its definition). `cx expand` prints the
   expanded source for debugging.
-* **Not yet**: hygiene (body-introduced identifiers are emitted verbatim); macro
-  definitions do not cross `import` boundaries (each file is expanded on its
-  own, so an imported `.hx` cannot export a macro to its importer); and macro
-  definitions are not indexed by the LSP (they are gone before the AST is
+* **Imports**: a source may use a macro defined by a file it `import`s — before
+  expanding, the expander collects `macro_rules!` definitions from imported files
+  (recursively, bounded against import cycles), so a `.hx` can export a macro to
+  its importer. The importer's own definitions are collected by the normal pass,
+  so they take precedence over imported ones of the same name.
+* **Not yet**: hygiene (body-introduced identifiers are emitted verbatim); and
+  macro definitions are not indexed by the LSP (they are gone before the AST is
   built).
 
 ### Headers and imports
@@ -317,8 +377,18 @@ A `.cx` can pull in another module with `import "mod.hx";`: the target is parsed
 (sharing the type-name set, so its types are visible to the importer), its
 declarations are merged into the symbol table (so calls are mangled and types
 resolve), and the generated C gets `#include "mod.h"`. Imports are
-declaration-only; a paired `.hx`/`.cx` model (where the `.c` includes the header
-and skips duplicate declarations) is not implemented yet.
+declaration-only.
+
+**Paired `.hx`/`.cx` model.** When a `.cx` is built and a sibling `.hx` with the
+same basename exists (`foo.cx` ⇄ `foo.hx`), the transpiler pairs them: the
+generated `foo.c` starts with `#include "foo.h"` and skips the declarations the
+header already provides (the preamble, typedefs and struct definitions). Only
+the definitions are emitted: prototypes for the `.cx`'s own helpers, then impl
+methods/tables, ctor/dtor helpers, function bodies and globals. The two files
+are expected to share their declarations (write the interface in `foo.hx` and
+the same types plus the bodies in `foo.cx`); the header is the single source of
+the shape, so the `.c` compiles against exactly what consumers see. A `.cx`
+without a sibling `.hx` emits the full translation unit as before.
 
 ### Name mangling summary
 
@@ -369,6 +439,11 @@ Details:
   vtable type to call through the pointer).
 * `raw { … }` is emitted verbatim (first line indented; the rest kept as
   written). A top-level `raw`/macro line goes in phase 0.
+* **Paired `.c`** (`foo.cx` with a sibling `foo.hx`): `cx_emit_c` prefixes the
+  output with `#include "foo.h"` and skips phases 0–1 (preamble, typedefs,
+  struct definitions). Phase 2 (prototypes, including the `.cx`'s own helpers —
+  a duplicate prototype is legal C) and phases 3–4 (definitions) are still
+  emitted for the structs/functions the `.cx` declares.
 * In an `implements` method body the receiver is a local
   `struct T *self = self_; (void)self;`, so `self->field` and bare field names
   both resolve.
@@ -388,6 +463,14 @@ Details:
 * enforces **dtor/ctor name == struct name** and rejects duplicates;
 * `check_calls` rejects a call whose callee is a struct with no constructor
   (`no constructor defined for struct 'T'`);
+* `resolve_receivers` **lowers `.`/`->` method calls** (see §4): it keeps a
+  **block-scoped** environment (parameters + locals, pushed/popped per block) and
+  rewrites `recv.method(args)` whose receiver has a known struct type into the
+  associated call `Type__method(&recv, args)`. Constructor/destructor/`implements`
+  method bodies are walked with `self` bound to the enclosing struct (as
+  `<Struct> *`), and struct fields are kept out of the local scope. It runs
+  between two `infer_auto` passes (a silent one first, a reporting one after) so
+  an `auto` local can serve as a receiver and `auto x = l.pop();` still infers;
 * `check_macro_requires` verifies **checked `requires`**: for each `requires`
   binding the macro expander recorded on the TU (`CxMacroMap`), the required
   trait must exist, and then:
@@ -435,10 +518,25 @@ Read this before changing the grammar/lexer.
 * **No implicit destructor.** If a struct embeds a destructible member but
   declares no `~T()`, member dtors are not called (no place to hook them).
 * **`auto` inference** is a sema pass (`infer_auto`) that rewrites the var's
-  type in place. It resolves call return types, constructor calls, literals,
-  parens, casts, and identifiers of symbols in the table (globals/functions);
-  anything else reports *cannot infer type for 'auto'*. Locals/params are not in
-  the table.
+  type in place. It resolves call return types (including `auto` functions whose
+  type was already inferred), constructor calls, literals, strings, parens,
+  casts, function parameters, comparison/logical operands (`int`), and
+  identifiers of symbols in the table (globals/functions); anything else reports
+  *cannot infer type for 'auto'*. Locals are not in the table. An `auto`
+  function's return type is inferred from the first `return expr;` and its symbol
+  is updated.
+* **Receiver types / `.`-method calls.** `resolve_receivers` keeps a **block-scoped**
+  environment (parameters, then locals pushed/popped per block) so
+  `recv.method(args)` lowers to `Type__method(&recv, args)`; a pointer receiver
+  is passed through. In a constructor/destructor/`implements` method body, `self`
+  is bound to the enclosing struct as a pointer (`<Struct> *`), so a
+  `self.method(x)` call lowers to `Type__method(self, x)`; struct fields are not
+  pushed into the local scope. Only an `IDENT` receiver is resolved this way —
+  use the associated `Type::method(…)` form for a computed receiver. An
+  unresolved method call is emitted verbatim (`recv.method(args)`), so a call
+  through a C function-pointer field keeps working. The grammar distinguishes the
+  method call from the field access by the `(` after the member (no `expr '(' …`
+  rule exists, so there is no conflict).
 * **Typedef aliases** are emitted verbatim (`typedef …`) and registered in the
   lexer type set, but struct-specific behaviour (cleanup, member ctor/dtor calls,
   `auto` inference) keys off the **struct name**, not the alias — so aliasing a
@@ -460,8 +558,14 @@ Read this before changing the grammar/lexer.
   to the importing file; cycles are skipped via `ctx->active`. Imported
   declarations are merged in sema for resolution only (never emitted); the output
   is a single `#include "mod.h"`. Diagnostics raised while parsing an import are
-  attributed to the importing file. Import declaration-only `.hx` modules — a
-  `.cx` has no generated header to `#include`.
+  attributed to the importing file. Separately, the macro pass collects
+  `macro_rules!` definitions from a source's imported files (recursively,
+  cycle-bounded) before expanding it, so an imported `.hx` can export a macro.
+  Independently, a `.cx` is *paired* with a
+  sibling `.hx` of the same basename (detected in the CLI, not the parser): the
+  `.c` includes `foo.h` and skips the declarations the header already provides
+  (see §4/§5). This 1:1 basename mapping (`foo.cx` ⇄ `foo.hx` ⇄ `foo.c`) means a
+  `.cx` need not spell an `import` for its own header.
 * **Verbatim capture** (`raw { … }`, `NAME!( … )`) uses two Flex start conditions
   (`RAW`/`MACRO`) that copy balanced `{}`/`()` into a buffer in `CxParseCtx`; the
   text is copied into the arena when the token is produced, so it survives LAC

@@ -37,8 +37,10 @@ static void respond_result(const JsonValue *id, const char *result_json) {
     cx_buf_free(&b);
 }
 
-/* documentSymbol (kind 0), definition (1), hover (2). Each reparses the stored
- * document through the shared parser + symbol table. */
+/* documentSymbol (0), definition (1), hover (2), completion (3), signatureHelp
+ * (4), documentHighlight (5), references (6), rename (7). Each reparses the
+ * stored document through the shared parser + symbol table (except 5/6/7, which
+ * are lexical). */
 static void handle_query(const JsonValue *params, const JsonValue *id, int kind) {
     const JsonValue *td = cx_json_get(params, "textDocument");
     const char *uri = cx_json_string(cx_json_get(td, "uri"));
@@ -60,6 +62,13 @@ static void handle_query(const JsonValue *params, const JsonValue *id, int kind)
     if (kind == 0) cx_lsp_document_symbols(&result, uri, text, len);
     else if (kind == 1) cx_lsp_definition(&result, uri, text, len, line, ch);
     else if (kind == 3) cx_lsp_completion(&result, uri, text, len, line, ch);
+    else if (kind == 4) cx_lsp_signature_help(&result, uri, text, len, line, ch);
+    else if (kind == 5)
+        cx_lsp_document_highlight(&result, uri, text, len, line, ch);
+    else if (kind == 6) cx_lsp_references(&result, uri, text, len, line, ch);
+    else if (kind == 7)
+        cx_lsp_rename(&result, uri, text, len, line, ch,
+                      cx_json_string(cx_json_get(params, "newName")));
     else cx_lsp_hover(&result, uri, text, len, line, ch);
     fprintf(stderr, "cx lsp: query kind=%d uri=%s pos=%d:%d -> %s\n",
             kind, uri, line, ch, result.data ? result.data : "null");
@@ -78,7 +87,11 @@ static void handle_initialize(const JsonValue *id) {
                   "\"documentSymbolProvider\":true,"
                   "\"definitionProvider\":true,"
                   "\"declarationProvider\":true,"
-                  "\"completionProvider\":{\"triggerCharacters\":[\".\",\":\"]},"
+                  "\"completionProvider\":{\"triggerCharacters\":[\".\",\":\",\">\"]},"
+                  "\"signatureHelpProvider\":{\"triggerCharacters\":[\"(\",\",\"]},"
+                  "\"documentHighlightProvider\":true,"
+                  "\"referencesProvider\":true,"
+                  "\"renameProvider\":true,"
                   "\"hoverProvider\":true"
                   "},\"serverInfo\":{\"name\":\"cx\",\"version\":\"%s\"}}}",
                   CX_VERSION);
@@ -186,6 +199,14 @@ int cx_lsp_run(void) {
             handle_query(params, id, 2);
         } else if (method && !strcmp(method, "textDocument/completion")) {
             handle_query(params, id, 3);
+        } else if (method && !strcmp(method, "textDocument/signatureHelp")) {
+            handle_query(params, id, 4);
+        } else if (method && !strcmp(method, "textDocument/documentHighlight")) {
+            handle_query(params, id, 5);
+        } else if (method && !strcmp(method, "textDocument/references")) {
+            handle_query(params, id, 6);
+        } else if (method && !strcmp(method, "textDocument/rename")) {
+            handle_query(params, id, 7);
         } else if (id) {
             /* Unknown request: answer with a null result so the client is not stuck. */
             respond_null(id);

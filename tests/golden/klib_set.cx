@@ -1,0 +1,93 @@
+#include "khash.h"
+
+// A macro-defined, khash-backed set of `int` values (`KHASH_SET_INIT_INT`). A
+// per-instantiation C helper wraps the `void *` handle; the Cx wrapper tracks
+// the element count itself (kh_size would need the typed handle).
+raw {
+    #define CX_KHASH_SET_HELPERS(name) \
+        static int cx_##name##_add(void *h, int key) { \
+            khash_t(name) *t = (khash_t(name) *)h; \
+            int absent = 0; \
+            kh_put_##name(t, key, &absent); \
+            return absent; \
+        } \
+        static int cx_##name##_has(void *h, int key) { \
+            khash_t(name) *t = (khash_t(name) *)h; \
+            return kh_get_##name(t, key) != kh_end(t); \
+        } \
+        static void cx_##name##_del(void *h, int key) { \
+            khash_t(name) *t = (khash_t(name) *)h; \
+            khint_t it = kh_get_##name(t, key); \
+            if (it != kh_end(t)) kh_del_##name(t, it); \
+        }
+}
+
+// Public method spelling: `$name::new` / `::add` / `::has` / `::del` / `::size`
+// / `::free`; call sites use the `.`-method form (`s.add(1)`).
+macro_rules! define_int_set {
+    ($name:ident) => {
+        KHASH_SET_INIT_INT!($name);
+        CX_KHASH_SET_HELPERS!($name);
+
+        struct $name {
+            void *h;
+            int n;
+        };
+
+        $name $name::new() {
+            $name s;
+            s.h = kh_init_##$name();
+            s.n = 0;
+            return s;
+        }
+
+        // Insert `value`; returns 1 if it was not already present.
+        int $name::add($name *s, int value) {
+            int added = cx_##$name##_add(s->h, value);
+            if (added != 0) {
+                s->n += 1;
+            }
+            return added;
+        }
+
+        int $name::has($name *s, int value) {
+            return cx_##$name##_has(s->h, value);
+        }
+
+        void $name::del($name *s, int value) {
+            if (cx_##$name##_has(s->h, value) != 0) {
+                cx_##$name##_del(s->h, value);
+                s->n -= 1;
+            }
+        }
+
+        int $name::size($name *s) {
+            return s->n;
+        }
+
+        void $name::free($name *s) {
+            kh_destroy_##$name(s->h);
+            s->h = 0;
+            s->n = 0;
+        }
+    };
+}
+
+namespace demo {
+
+    define_int_set!(IntSet);
+
+    int run() {
+        IntSet s = IntSet::new();
+        s.add(1);
+        s.add(2);
+        s.add(1); /* duplicate: not counted */
+
+        int has = s.has(2);
+        int n = s.size();
+
+        s.del(1);
+        s.free();
+        return has + n;
+    }
+}

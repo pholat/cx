@@ -2,19 +2,21 @@
 
 > **Status.** Implemented since this list was written: `#include`/`#define`
 > passthrough, comparisons/logical/bitwise operators, `++`/`--`, compound
-> assignment, `if`/`else`/`while`/`for`/`break`/`continue`, pointer types,
-> `->`, `[]`, `&`/`*`, casts `(T)expr`, `sizeof`, `switch`/`case`/`default`,
-> `goto`, function pointers `T (*name)(params)`, `auto`, multi-word types and
-> `const`, typedefs, multiple declarators, declaration-only headers, Cx-to-Cx
-> `import`, the **`raw { … }` escape hatch**, **`NAME!( … )` macro-invocation
-> passthrough**, **static traits** (`trait`/`implements`), and **`macro_rules!`**
-> (item + expression-position expansion with repetitions and `##`). A
-> **macro_rules-based container layer** over klib now exists
-> (`tests/golden/klib_list.cx`, `tests/golden/klib_map.cx`, `klib_bag.cx`),
-> including **checked `requires`** bounds. Still missing: a non-POD element
-> free/RAII policy (klib's C macros cannot name a mangled Cx struct type, so
-> element/value types stay primitive or `void *`), a user-facing stdlib module,
-> and some C-preprocessor/expression gaps listed below.
+> assignment, the conditional `?:`, `if`/`else`/`while`/`do…while`/`for`/
+> `break`/`continue`, pointer types, `->`, `[]`, `&`/`*`, casts `(T)expr`,
+> `sizeof`, `switch`/`case`/`default`, `goto`, function pointers
+> `T (*name)(params)`, `auto`, multi-word types and `const`, typedefs, multiple
+> declarators, declaration-only headers, Cx-to-Cx `import`, the **`raw { … }`
+> escape hatch**, **`NAME!( … )` macro-invocation passthrough**, **static
+> traits** (`trait`/`implements`), and **`macro_rules!`** (item +
+> expression-position expansion with repetitions and `##`; definitions cross
+> `import` boundaries). A **macro_rules-based container layer** over klib now
+> ships as the `std_*.hx` modules (`std_list.hx`, `std_map.hx`, `std_strmap.hx`,
+> `std_set.hx`, `std_strset.hx`, `std_vec.hx`, `std_drop.hx`), with **checked
+> `requires`** bounds and an **element free/RAII policy** (`free` drops each
+> element through the installed vtable). Remaining gaps: klib's C macros cannot
+> name a mangled Cx struct type (so element/value types stay primitive or
+> `void *`), plus some C-preprocessor/expression gaps listed below.
 >
 > The hand-written bridge this list originally motivated
 > (`examples/klib/klib_bridge.{c,h}` + `list.cx`/`map.cx`) has been **removed**;

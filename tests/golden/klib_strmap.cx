@@ -1,0 +1,105 @@
+#include "khash.h"
+
+// A macro-defined, string-keyed, khash-backed map from `const char *` to `int`
+// (`KHASH_MAP_INIT_STR`). The keys are *not* copied by klib, so the caller keeps
+// them alive (string literals are fine). As in `klib_map.cx`, a
+// per-instantiation C helper provides typed accessors over a `void *` handle —
+// Cx cannot spell `khash_t(<Name>)`.
+raw {
+    #define CX_KHASH_STRMAP_HELPERS(name) \
+        static int cx_##name##_put(void *h, const char *key, int value) { \
+            khash_t(name) *t = (khash_t(name) *)h; \
+            int absent = 0; \
+            khint_t it = kh_put_##name(t, key, &absent); \
+            t->vals[it] = value; \
+            return absent; \
+        } \
+        static int cx_##name##_get(void *h, const char *key, int fallback) { \
+            khash_t(name) *t = (khash_t(name) *)h; \
+            khint_t it = kh_get_##name(t, key); \
+            if (it == kh_end(t)) return fallback; \
+            return t->vals[it]; \
+        } \
+        static int cx_##name##_has(void *h, const char *key) { \
+            khash_t(name) *t = (khash_t(name) *)h; \
+            return kh_get_##name(t, key) != kh_end(t); \
+        } \
+        static void cx_##name##_del(void *h, const char *key) { \
+            khash_t(name) *t = (khash_t(name) *)h; \
+            khint_t it = kh_get_##name(t, key); \
+            if (it != kh_end(t)) kh_del_##name(t, it); \
+        }
+}
+
+// Public method spelling: `$name::new` / `::put` / `::get` / `::has` / `::del`
+// / `::size` / `::free`, all usable with the `.`-method form (`m.put("k", 1)`).
+macro_rules! define_str_map {
+    ($name:ident) => {
+        KHASH_MAP_INIT_STR!($name, int);
+        CX_KHASH_STRMAP_HELPERS!($name);
+
+        struct $name {
+            void *h;
+            int n;
+        };
+
+        $name $name::new() {
+            $name m;
+            m.h = kh_init_##$name();
+            m.n = 0;
+            return m;
+        }
+
+        void $name::put($name *m, const char *key, int value) {
+            if (cx_##$name##_put(m->h, key, value) != 0) {
+                m->n += 1;
+            }
+        }
+
+        int $name::get($name *m, const char *key, int fallback) {
+            return cx_##$name##_get(m->h, key, fallback);
+        }
+
+        int $name::has($name *m, const char *key) {
+            return cx_##$name##_has(m->h, key);
+        }
+
+        void $name::del($name *m, const char *key) {
+            if (cx_##$name##_has(m->h, key) != 0) {
+                cx_##$name##_del(m->h, key);
+                m->n -= 1;
+            }
+        }
+
+        int $name::size($name *m) {
+            return m->n;
+        }
+
+        void $name::free($name *m) {
+            kh_destroy_##$name(m->h);
+            m->h = 0;
+            m->n = 0;
+        }
+    };
+}
+
+namespace demo {
+
+    define_str_map!(StrMap);
+
+    int run() {
+        StrMap m = StrMap::new();
+        m.put("alpha", 1);
+        m.put("beta", 2);
+        m.put("alpha", 11); /* overwrite: the count stays 2 */
+
+        int a = m.get("alpha", 0);
+        int b = m.get("missing", -1);
+        int has = m.has("beta");
+        int n = m.size();
+
+        m.del("beta");
+        m.free();
+        return a + b + has + n;
+    }
+}

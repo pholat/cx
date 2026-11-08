@@ -1,0 +1,33 @@
+// The string-keyed containers from the `std_*.hx` modules. `const char *` keys
+// are not copied by klib, so the caller keeps them alive — string literals are
+// fine here.
+import "std_strmap.hx";
+import "std_strset.hx";
+
+namespace demo {
+
+    define_str_map!(NameMap, int);
+    define_str_set!(NameSet);
+
+    int run() {
+        NameMap m = NameMap::new();
+        m.put("alpha", 1);
+        m.put("beta", 2);
+        m.put("alpha", 11); // overwrite: the count stays 2
+        int a = m.get("alpha", 0);
+        int missing = m.get("missing", -1);
+        int n = m.size();
+        m.del("beta");
+        m.free();
+
+        NameSet s = NameSet::new();
+        s.add("x");
+        s.add("y");
+        s.add("x"); // duplicate: not counted
+        int has = s.has("y");
+        int k = s.size();
+        s.free();
+
+        return a + missing + n + has + k;
+    }
+}

@@ -44,10 +44,12 @@ typedef enum {
     CX_NODE_EXPR_UNARY,
     CX_NODE_EXPR_ASSIGN,
     CX_NODE_EXPR_PAREN,
+    CX_NODE_EXPR_TERNARY, /* `c ? a : b`: cond=c, lhs=a, rhs=b */
     CX_NODE_EXPR_POSTFIX,
     CX_NODE_EMPTY,
     CX_NODE_IF,
     CX_NODE_WHILE,
+    CX_NODE_DO, /* `do stmt while (cond);`: body=stmt, cond=cond */
     CX_NODE_FOR,
     CX_NODE_BREAK,
     CX_NODE_CONTINUE,
@@ -85,8 +87,16 @@ struct CxNode {
     char *type;    /* declared type text (e.g. "File" or "File *") */
     char *prelude; /* raw preprocessor directives, emitted verbatim at the top */
     char *file;    /* source path this node was parsed from (roots) */
+    /* Translation unit only: the generated header (`foo.h`) of the paired
+     * `foo.hx`, when one exists. The `.c` includes it and skips the
+     * declarations it already provides. NULL for a standalone `.cx`. */
+    char *paired_header;
 
-    CxNode *lhs;   /* left operand / field object / for-init */
+    CxNode *lhs;   /* left operand / field object / for-init / method receiver.
+                    * For a `CX_NODE_EXPR_CALL`, a non-NULL `lhs` means the call
+                    * was written as `recv.method(args)` (or `recv->method(args)`);
+                    * sema rewrites it to a plain call and clears `lhs`, leaving
+                    * the `.`/`->` spelling in `type` for the emitter fallback. */
     CxNode *rhs;   /* right operand */
     CxNode *init;  /* variable initializer / return value */
     CxNode *body;  /* function / destructor block / loop body */

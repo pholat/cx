@@ -1556,6 +1556,128 @@ static void scan_defs(CxArena *a, CxDiagList *diags, const char *src,
     }
 }
 
+/* ============================================== macros across import boundaries */
+
+typedef struct {
+    char **items;
+    int    len;
+    int    cap;
+} PathVec;
+
+static void path_push(CxArena *a, PathVec *v, const char *s) {
+    if (v->len == v->cap) {
+        int cap = v->cap ? v->cap * 2 : 8;
+        char **items = (char **)cx_arena_alloc(a, sizeof(char *) * (size_t)cap);
+        if (!items) return;
+        if (v->items && v->len)
+            memcpy(items, v->items, sizeof(char *) * (size_t)v->len);
+        v->items = items;
+        v->cap = cap;
+    }
+    v->items[v->len++] = (char *)s;
+}
+
+/* Strip the surrounding quotes from a string token. */
+static const char *str_unquote(CxArena *a, const char *s) {
+    size_t n = s ? strlen(s) : 0;
+    if (n >= 2 && s[0] == '"' && s[n - 1] == '"')
+        return cx_arena_strndup(a, s + 1, n - 2);
+    return s;
+}
+
+/* Collect the paths of every `import "…"` in a token tree (recursively). */
+static void find_imports(CxArena *a, MToken **toks, int n, PathVec *out) {
+    for (int i = 0; i < n; i++) {
+        MToken *t = toks[i];
+        if (t->kind == MT_IDENT && t->text && !strcmp(t->text, "import") &&
+            i + 1 < n && toks[i + 1]->kind == MT_STRING) {
+            path_push(a, out, str_unquote(a, toks[i + 1]->text));
+        }
+        if (t->kind == MT_GROUP) find_imports(a, t->kids, t->nkids, out);
+    }
+}
+
+/* Resolve `path` relative to `base_file` (a plain path or a `file://` URI). */
+static void resolve_rel(const char *base_file, const char *path, char *out,
+                        size_t n) {
+    const char *bf = base_file ? base_file : "";
+    int is_uri = strncmp(bf, "file://", 7) == 0;
+    const char *dir_file = is_uri ? bf + 7 : bf;
+    if (path[0] == '/') {
+        snprintf(out, n, "%s", path);
+        return;
+    }
+    const char *slash = strrchr(dir_file, '/');
+    if (slash)
+        snprintf(out, n, "%.*s/%s", (int)(slash - dir_file), dir_file, path);
+    else
+        snprintf(out, n, "%s", path);
+}
+
+/* Read a whole file into malloc'd storage (NUL-terminated), or NULL. */
+static char *read_file(const char *path, size_t *len_out) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    long sz = ftell(f);
+    if (sz < 0) {
+        fclose(f);
+        return NULL;
+    }
+    rewind(f);
+    char *buf = (char *)malloc((size_t)sz + 1);
+    if (!buf) {
+        fclose(f);
+        return NULL;
+    }
+    size_t got = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    buf[got] = '\0';
+    if (len_out) *len_out = got;
+    return buf;
+}
+
+/* Collect `macro_rules!` definitions from `src` (when `collect_own`) and,
+ * recursively, from the files it imports, into `tab`. This is what lets a `.hx`
+ * export a macro to its importer. `depth` bounds import cycles. */
+static void collect_imports_from(CxArena *a, CxDiagList *diags, const char *src,
+                                 size_t len, const char *filename, MacroTable *tab,
+                                 int depth, int collect_own) {
+    if (!src || !filename || depth > 16) return;
+
+    LexCtx lx;
+    memset(&lx, 0, sizeof lx);
+    lx.arena = a;
+    lx.diags = diags;
+    lx.src = src;
+    lx.len = len;
+    lx.line = 1;
+    lx.col = 1;
+    MTVec toks = {0};
+    lex_tokens(&lx, '\0', &toks);
+
+    if (collect_own) {
+        ReplVec reps = {0};
+        int found = 0;
+        scan_defs(a, diags, src, toks.items, toks.len, tab, &reps, &found);
+    }
+
+    PathVec paths = {0};
+    find_imports(a, toks.items, toks.len, &paths);
+    for (int i = 0; i < paths.len; i++) {
+        char resolved[1024];
+        resolve_rel(filename, paths.items[i], resolved, sizeof resolved);
+        size_t n = 0;
+        char *buf = read_file(resolved, &n);
+        if (!buf) continue;
+        collect_imports_from(a, diags, buf, n, resolved, tab, depth + 1, 1);
+        free(buf);
+    }
+}
+
 static char *expand_invocation(CxArena *a, CxDiagList *diags, Macro *mac,
                                MToken *args, CxSpan span, CxMacroMap *map) {
     for (int r = 0; r < mac->nrules; r++) {
@@ -1717,10 +1839,14 @@ static char *apply_repls(CxArena *a, const char *src, size_t len,
 char *cx_macro_expand(CxArena *arena, const char *src, size_t len,
                       const char *filename, CxDiagList *diags,
                       CxMacroMap *map) {
-    (void)filename;
     if (!src) return cx_arena_strdup(arena, "");
 
     MacroTable table = {0};
+    /* An imported `.hx` may export `macro_rules!`: collect definitions from the
+     * files this one imports before expanding. The current file's own
+     * definitions are collected by the loop below (so they take precedence). */
+    collect_imports_from(arena, diags, src, len, filename, &table, 0, 0);
+
     char *cur = cx_arena_strndup(arena, src, len);
 
     for (int pass = 0; pass < 64; pass++) {

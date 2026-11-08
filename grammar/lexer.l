@@ -99,6 +99,7 @@ IDENT   [A-Za-z_][A-Za-z0-9_]*
 "if"            { return IF; }
 "else"          { return ELSE; }
 "while"         { return WHILE; }
+"do"            { return DO; }
 "for"           { return FOR; }
 "break"         { return BREAK; }
 "continue"      { return CONTINUE; }
@@ -188,6 +189,7 @@ IDENT   [A-Za-z_][A-Za-z0-9_]*
 "->"                        { return ARROW; }
 "::"                        { return SCOPE; }
 ":"                         { return ':'; }
+"?"                         { return '?'; }
 "["                         { return '['; }
 "]"                         { return ']'; }
 "<"                         { return '<'; }

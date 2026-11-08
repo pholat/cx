@@ -23,6 +23,35 @@ int cx_lsp_prefix_at(const char *text, int line, int column, char *buf, size_t n
 int cx_lsp_scope_at(const char *text, int line, int column, char *qual,
                     size_t qn, char *member, size_t mn);
 
+/* If the 1-based (line, column) sits in a `recv.member` / `recv->member` access
+ * (the cursor may be inside `member`, or just after the `.`/`->` with an empty
+ * member, for completion), copy the receiver identifier into `recv` and the
+ * member (possibly empty) into `member`, and return 1. Otherwise return 0. Used
+ * to type a `.`/`->` receiver. */
+int cx_lsp_dot_at(const char *text, int line, int column, char *recv, size_t rn,
+                  char *member, size_t mn);
+
+/* Strip trailing pointer/space/array decoration so "File *" -> "File". */
+void cx_lsp_base_type(const char *type, char *buf, size_t n);
+
+/* The base type name of the receiver `name` at the 1-based (line, column), or
+ * NULL. Tries the AST (`cx_sema_receiver_type`, then a global symbol) and, when
+ * the live text is an incomplete expression at the cursor (so the enclosing
+ * function could not reduce and the declaration is invisible), reparses a copy
+ * with the cursor's line completed by a placeholder. Copies the pointer-stripped
+ * type into `buf`. Used for `.`/`->` completion/hover/definition/signature. */
+const char *cx_lsp_receiver_base(CxArena *arena, CxNode *tu,
+                                 CxSymbolTable *sema, const char *text,
+                                 const char *uri, int line, int column,
+                                 const char *name, char *buf, size_t n);
+
+/* If the 1-based (line, column) is inside a call's argument list, find the `(`
+ * that opens it and the 0-based argument index at the cursor (top-level commas
+ * between the `(` and the cursor). Returns 1 (writing the 1-based positions of
+ * the `(` into *open_line and *open_col) on success. Used by signature help. */
+int cx_lsp_call_open_at(const char *text, int line, int column, int *open_line,
+                        int *open_col, int *arg_index);
+
 /* Collect the run of `//` comment lines immediately above the 1-based `line`
  * into `buf` (comment markers and leading indentation stripped). Returns the
  * 1-based line of the first collected comment line, or 0 if there is none. */

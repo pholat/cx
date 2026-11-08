@@ -57,6 +57,10 @@ int cx_lsp_completion(CxBuf *out, const char *uri, const char *text, size_t len,
     int scoped = cx_lsp_scope_at(text, line + 1, character + 1, qual,
                                  sizeof qual, member, sizeof member);
 
+    char recv[128], dmem[128];
+    int dotted = cx_lsp_dot_at(text, line + 1, character + 1, recv, sizeof recv,
+                               dmem, sizeof dmem);
+
     CxArena *arena = cx_arena_new();
     CxDiagList diags;
     cx_diaglist_init(&diags, uri);
@@ -66,6 +70,23 @@ int cx_lsp_completion(CxBuf *out, const char *uri, const char *text, size_t len,
 
     cx_buf_putc(out, '[');
     int count = 0;
+
+    /* After `recv.` / `recv->`, type the receiver (locals/params, else a global,
+     * with a repaired-reparse fallback for incomplete code); unresolved falls
+     * through to the general list. */
+    char recv_base[128];
+    const char *recv_type = NULL;
+    if (dotted && sema)
+        recv_type = cx_lsp_receiver_base(arena, tu, sema, text, uri, line + 1,
+                                         character + 1, recv, recv_base,
+                                         sizeof recv_base);
+    /* `recv.` -> a struct (fields + methods); `recv.` where `recv` names a trait
+     * is the `x.Trait->method` step, so offer the trait's methods. */
+    CxSymbol *recv_struct = (recv_type && sema)
+                                ? cx_sema_find_struct(sema, recv_type)
+                                : NULL;
+    CxSymbol *recv_trait =
+        (!recv_type && dotted && sema) ? cx_sema_find_trait(sema, recv) : NULL;
 
     if (scoped) {
         /* After `Type::`, offer that type's generated members (`Type__member`)
@@ -83,6 +104,60 @@ int cx_lsp_completion(CxBuf *out, const char *uri, const char *text, size_t len,
             char label[260];
             snprintf(label, sizeof label, "%s::%s", qual, m);
             add_item2(out, &count, label, 3, s->type, m);
+        }
+    } else if (recv_type || recv_trait) {
+        /* Offer the receiver type's members as bare names (inserted after the
+         * `.`/`->`): associated functions named `Type__member`, plus the
+         * struct's own fields and its trait vtable pointers. For a trait
+         * receiver (`x.Trait->`), offer the trait's methods. */
+        size_t mlen = strlen(dmem);
+        if (recv_type) {
+            size_t blen = strlen(recv_type);
+            for (int i = 0; i < sema->len; i++) {
+                CxSymbol *s = sema->items[i];
+                if (!s->name || s->kind != CX_NODE_FUNCTION) continue;
+                if (strlen(s->name) < blen + 2) continue;
+                if (strncmp(s->name, recv_type, blen) != 0) continue;
+                if (s->name[blen] != '_' || s->name[blen + 1] != '_') continue;
+                const char *m = s->name + blen + 2;
+                /* Skip `Type__Trait__method` impl methods: those are reached
+                 * through the trait pointer field (`x.Trait->method`). */
+                if (strstr(m, "__")) continue;
+                /* Only instance methods: the first parameter must be the
+                 * receiver type (a static `Type__new()` has none). */
+                if (!s->decl || s->decl->params.len == 0) continue;
+                char pb[128];
+                cx_lsp_base_type(s->decl->params.items[0]->type, pb, sizeof pb);
+                if (strcmp(pb, recv_type) != 0) continue;
+                if (mlen && strncmp(m, dmem, mlen) != 0) continue;
+                add_item2(out, &count, m, 2 /* Method */, s->type, m);
+            }
+        }
+
+        CxNode *decl = recv_struct ? recv_struct->decl : NULL;
+        for (int i = 0; decl && i < decl->children.len; i++) {
+            CxNode *m = decl->children.items[i];
+            if (m->kind == CX_NODE_VAR_DECL) {
+                for (int k = 0; k < m->children.len; k++) {
+                    CxNode *d = m->children.items[k];
+                    if (!d->name) continue;
+                    if (mlen && strncmp(d->name, dmem, mlen) != 0) continue;
+                    add_item2(out, &count, d->name, 5 /* Field */, m->type,
+                              d->name);
+                }
+            } else if (m->kind == CX_NODE_IMPLEMENTS && m->name) {
+                if (mlen && strncmp(m->name, dmem, mlen) != 0) continue;
+                add_item2(out, &count, m->name, 5 /* Field */, "trait vtable",
+                          m->name);
+            }
+        }
+
+        decl = recv_trait ? recv_trait->decl : NULL;
+        for (int i = 0; decl && i < decl->children.len; i++) {
+            CxNode *m = decl->children.items[i];
+            if (m->kind != CX_NODE_TRAIT_METHOD || !m->name) continue;
+            if (mlen && strncmp(m->name, dmem, mlen) != 0) continue;
+            add_item2(out, &count, m->name, 2 /* Method */, m->type, m->name);
         }
     } else {
         for (int i = 0; sema && i < sema->len; i++) {

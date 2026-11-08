@@ -1,0 +1,44 @@
+namespace demo {
+
+    struct Point {
+        int x;
+        int y;
+    };
+
+    Point Point__new(int x, int y) {
+        Point p;
+        p.x = x;
+        p.y = y;
+        return p;
+    }
+
+    int Point__get_x(Point *p) {
+        return p->x;
+    }
+
+    int Point__get_y(Point *p) {
+        return p->y;
+    }
+
+    int sum(Point *p) {
+        return Point::get_x(p) + Point::get_y(p);
+    }
+
+    int run() {
+        Point p = Point::new(3, 4);
+
+        // `.`-method call: sema lowers this to `Point__get_x(&p)`.
+        int a = p.get_x();
+
+        // An `auto` receiver is typed by the silent inference pass first, so
+        // `q.get_y()` also lowers to an associated call.
+        auto q = Point::new(1, 2);
+        int b = q.get_y();
+
+        // `->`-method call: a pointer receiver is passed through.
+        Point *r = &p;
+        int c = r->get_y();
+
+        return a + b + c + sum(&p);
+    }
+}

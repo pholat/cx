@@ -1,0 +1,34 @@
+namespace demo {
+
+    int base() {
+        return 10;
+    }
+
+    // `auto` return: inferred from a call (the callee's declared return type).
+    auto from_base() {
+        return base();
+    }
+
+    // `auto` return: inferred from a literal.
+    auto forty_two() {
+        return 42;
+    }
+
+    // `auto` return: inference consults the function's parameters.
+    auto scaled(int x) {
+        return x + base();
+    }
+
+    // A comparison yields `int`.
+    auto positive(int x) {
+        return x > 0;
+    }
+
+    int run() {
+        auto a = from_base();
+        auto b = forty_two();
+        auto c = scaled(2);
+        auto d = positive(c);
+        return a + b + c + d;
+    }
+}

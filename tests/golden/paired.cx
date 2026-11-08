@@ -1,0 +1,35 @@
+namespace demo {
+
+    trait Printable {
+        void print(self);
+    }
+
+    struct Counter {
+        int value;
+
+        Counter(int v) {
+            value = v;
+        }
+
+        ~Counter() {
+            value = 0;
+        }
+
+        implements Printable {
+            void print(self) {
+                value += 1;
+            }
+        }
+    };
+
+    int reset(int v) {
+        return v + 1;
+    }
+
+    int run() {
+        Counter c(3);
+        void (*print_fn)(void *) = c.Printable->print;
+        print_fn(&c);
+        return reset(c.value);
+    }
+}

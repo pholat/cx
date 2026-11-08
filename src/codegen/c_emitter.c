@@ -209,6 +209,13 @@ static void emit_expr(Emit *e, CxNode *n) {
         emit_expr(e, n->lhs);
         cx_buf_putc(e->out, ')');
         break;
+    case CX_NODE_EXPR_TERNARY:
+        emit_expr(e, n->cond);
+        cx_buf_puts(e->out, " ? ");
+        emit_expr(e, n->lhs);
+        cx_buf_puts(e->out, " : ");
+        emit_expr(e, n->rhs);
+        break;
     case CX_NODE_EXPR_BINARY:
         emit_expr(e, n->lhs);
         cx_buf_printf(e->out, " %s ", n->name);
@@ -258,6 +265,22 @@ static void emit_expr(Emit *e, CxNode *n) {
         cx_buf_putc(e->out, ')');
         break;
     case CX_NODE_EXPR_CALL: {
+        /* A non-NULL `lhs` marks an unresolved `recv.method(args)` /
+         * `recv->method(args)` (sema rewrites the receiver-typed ones to plain
+         * calls and clears `lhs`). Emit it back verbatim — e.g. a call through a
+         * C function-pointer field. */
+        if (n->lhs) {
+            emit_expr(e, n->lhs);
+            cx_buf_puts(e->out, n->type ? n->type : ".");
+            cx_buf_puts(e->out, n->name ? n->name : "");
+            cx_buf_putc(e->out, '(');
+            for (int i = 0; i < n->children.len; i++) {
+                if (i) cx_buf_puts(e->out, ", ");
+                emit_expr(e, n->children.items[i]);
+            }
+            cx_buf_putc(e->out, ')');
+            break;
+        }
         CxSymbol *fn = cx_sema_find_function(e->sema, n->name);
         if (fn)
             cx_buf_puts(e->out, fn->export_name
@@ -578,6 +601,15 @@ static void emit_stmt(Emit *e, CxNode *n) {
         emit_expr(e, n->cond);
         cx_buf_puts(e->out, ") ");
         emit_branch(e, n->body);
+        break;
+    case CX_NODE_DO:
+        ind(e);
+        cx_buf_puts(e->out, "do ");
+        emit_branch(e, n->body);
+        ind(e);
+        cx_buf_puts(e->out, "while (");
+        emit_expr(e, n->cond);
+        cx_buf_puts(e->out, ");\n");
         break;
     case CX_NODE_FOR:
         ind(e);
@@ -972,9 +1004,28 @@ void cx_emit_c(CxArena *arena, CxBuf *out, CxNode *tu,
         cx_buf_puts(out, tu->prelude);
         cx_buf_putc(out, '\n');
     }
+    /* Pairing: `foo.cx` includes the generated header of `foo.hx`, so the
+     * declarations live in one place. */
+    int paired = tu && tu->paired_header && tu->paired_header[0];
+    if (paired) cx_buf_printf(out, "#include \"%s\"\n", tu->paired_header);
     emit_includes(out, arena, tu);
 
     cx_emit_line(out, 1, file);
+
+    if (paired) {
+        /* The header already provides the preamble (trait vtable types, raw
+         * blocks, macro invocations), the typedefs and struct definitions; and
+         * its prototypes match the ones we would emit. Re-emitting the types
+         * would be a C redefinition, so emit only prototypes for the `.cx`'s
+         * own helpers and the definitions (impl methods/tables, ctor/dtor
+         * helpers, function bodies, globals). */
+        walk(&e, tu, NULL, 2);
+        cx_buf_puts(out, "\n");
+        walk(&e, tu, NULL, 3);
+        cx_buf_puts(out, "\n");
+        walk(&e, tu, NULL, 4);
+        return;
+    }
 
     walk(&e, tu, NULL, 0);
     cx_buf_puts(out, "\n");

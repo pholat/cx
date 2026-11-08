@@ -1,0 +1,21 @@
+namespace demo {
+
+    int countdown(int n) {
+        int total = 0;
+        do {
+            total += n;
+            n -= 1;
+        } while (n > 0);
+        return total;
+    }
+
+    // A single-statement body (the emitter still wraps it in braces).
+    int bump_to_ten(int n) {
+        do n = n + 1; while (n < 10);
+        return n;
+    }
+
+    int run() {
+        return countdown(4) + bump_to_ten(6);
+    }
+}

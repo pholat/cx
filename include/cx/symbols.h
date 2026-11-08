@@ -41,6 +41,15 @@ CxSymbol *cx_sema_find_symbol(const CxSymbolTable *table, const char *name);
 CxNode *cx_sema_find_trait_method(const CxSymbolTable *table, const char *trait,
                                   const char *method);
 
+/* The declared type of the local/parameter `name` visible at the 1-based
+ * (line, column) in `tu`, or NULL. This is the lookup side of `resolve_receivers`
+ * (without the rewrite) — the LSP uses it to type a `.`/`->` receiver. It honours
+ * block scope (an inner block's declaration does not leak past its `}`), types
+ * `self` inside a constructor/destructor/`implements` body, and falls back to the
+ * global symbol table only via the caller. `arena` is used for the scratch scope. */
+const char *cx_sema_receiver_type(CxArena *arena, CxNode *tu, int line,
+                                  int column, const char *name);
+
 int       cx_sema_type_has_dtor(const CxSymbolTable *table, const char *type);
 CxSymbol *cx_sema_dtor_for(const CxSymbolTable *table, const char *type);
 

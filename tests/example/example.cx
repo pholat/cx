@@ -1,0 +1,125 @@
+// Minimal, end-to-end Cx application.
+//
+//   example.cx  --cx build-->  example.c  --cc-->  example.out
+//
+// In one file it exercises the core of the language:
+//
+//   * a `namespace` wrapping the whole program,
+//   * a `macro_rules!` macro that generates a klib-backed list (the same
+//     technique as tests/golden/klib_list.cx),
+//   * macros that fill and print the list (5 values saved, then drained),
+//   * RAII: a struct with a constructor/destructor that owns the list and
+//     frees it when the owning scope ends (`__attribute__((cleanup))`),
+//   * a plain C `main` produced with `#[export("main")]`.
+
+#include <stdio.h>
+#include "klist.h"
+
+// klib's KLIST_INIT needs a free callback with C linkage; one shared no-op is
+// enough for POD elements.
+raw {
+    static void cx_nofree(void *p) { (void)p; }
+}
+
+// A macro-defined, klib-backed list of `$t`. The Cx wrapper stores the klib
+// list as `void *` and exposes `$name::new` / `::push` / `::pop` / `::size` /
+// `::free` (the `$name::method` spelling is rewritten to the internal
+// `Name__method`). This is lifted from tests/golden/klib_list.cx.
+macro_rules! define_list {
+    ($name:ident, $t:ty) => {
+        KLIST_INIT!($name, $t, cx_nofree);
+
+        struct $name {
+            void *v;
+            int n;
+        };
+
+        $name $name::new() {
+            $name l;
+            l.v = kl_init_##$name();
+            l.n = 0;
+            return l;
+        }
+
+        void $name::push($name *l, $t value) {
+            $t *p = kl_pushp_##$name(l->v);
+            *p = value;
+            l->n += 1;
+        }
+
+        $t $name::pop($name *l, $t fallback) {
+            $t out;
+            if (kl_shift_##$name(l->v, &out) == 0) {
+                l->n -= 1;
+                return out;
+            }
+            return fallback;
+        }
+
+        int $name::size($name *l) {
+            return l->n;
+        }
+
+        void $name::free($name *l) {
+            kl_destroy_##$name(l->v);
+            l->v = 0;
+            l->n = 0;
+        }
+    };
+}
+
+// Save the 5 values into `$list`, one generated `push` per value. The `$( … )*`
+// repetition is driven by `$value` (the only repeated metavariable inside it);
+// the list is bound to a local first so the body can name it without repeating.
+macro_rules! fill_list {
+    ($list:expr, $($value:expr),*) => {
+        IntList *dst = &($list);
+        $( IntList::push(dst, $value); )*
+    };
+}
+
+// Print the list by draining it: one generated `pop` + `printf` per element.
+macro_rules! print_list {
+    ($list:expr) => {
+        printf("list holds %d values:\n", IntList::size(&($list)));
+        while (IntList::size(&($list)) > 0) {
+            printf("  %d\n", IntList::pop(&($list), 0));
+        }
+    };
+}
+
+namespace example {
+
+    define_list!(IntList, int);
+
+    // RAII owner: the constructor creates the list, the destructor releases it
+    // when the owning scope ends. `__attribute__((cleanup))` makes the
+    // destructor run on every exit path, including `return`.
+    struct IntListOwner {
+        IntList list;
+
+        IntListOwner() {
+            list = IntList::new();
+        }
+
+        ~IntListOwner() {
+            IntList::free(&list);
+            printf("bye (RAII)\n");
+        }
+    };
+
+    // Cx namespaces mangle names, so the entry point is exported back to the
+    // plain C name `main`.
+    #[export("main")]
+    int run() {
+        printf("hello world\n");
+
+        IntListOwner owner = IntListOwner();
+
+        fill_list!(owner.list, 10, 20, 30, 40, 50);
+
+        print_list!(owner.list);
+
+        return 0;
+    }
+}

@@ -144,10 +144,12 @@ const char *cx_node_kind_name(CxNodeKind kind) {
     case CX_NODE_EXPR_UNARY:       return "unary";
     case CX_NODE_EXPR_ASSIGN:      return "assign";
     case CX_NODE_EXPR_PAREN:       return "paren";
+    case CX_NODE_EXPR_TERNARY:     return "ternary";
     case CX_NODE_EXPR_POSTFIX:     return "postfix";
     case CX_NODE_EMPTY:            return "empty";
     case CX_NODE_IF:               return "if";
     case CX_NODE_WHILE:            return "while";
+    case CX_NODE_DO:               return "do";
     case CX_NODE_FOR:              return "for";
     case CX_NODE_BREAK:            return "break";
     case CX_NODE_CONTINUE:         return "continue";

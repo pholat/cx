@@ -15,35 +15,50 @@ Done: **C interop** (`raw { … }` + `#include` + `NAME!(…)` macro invocation
 passthrough), **static traits** (`trait`/`implements`), **attributes** (`#[…]`),
 **`macro_rules!`** (item + expression-position expansion, see `TECHNICAL.md` §4),
 **checked trait requirements in macros** (`requires`, plus the `$x:method`
-`Trait::member` fragment), and the **LSP navigation/hover/completion** work for
-those (macro origins, `Type::method`, `Trait::method` + docs). See the Done list
-below.
+`Trait::member` fragment), the **paired `.hx`/`.cx` model** (`.c` includes the
+matching header and emits definitions only), **`auto` return types**,
+**`.`/`->` method calls** (receiver-type tracking), **container variants +
+teardown** (list/vec/bag + int/string maps + set, with `drop` on teardown),
+**macros across `import` boundaries** (`std_*.hx` container modules), the
+**conditional `?:` and `do…while`**, and the **LSP navigation/hover/completion**
+work for those (macro origins,
+`Type::method`, `Trait::method` + docs, receiver-type completion / hover / `gd` /
+signature help, and same-file `documentHighlight` / `references` / `rename`). See
+the Done list below.
 
 ## Ordered items
 
 1. **klib-backed containers** — `List<T>` / `Map<K,V>` on klib, via macros or
    (later) templates.
-   * **Done:** `tests/golden/klib_list.cx` (`IntList` over `klist.h`),
-     `tests/golden/klib_map.cx` (`IntMap` over `khash.h`, with a
-     `CX_KHASH_MAP_HELPERS` C macro for typed accessors over a `void *` handle),
-     and `tests/golden/klib_bag.cx` (element-typed `define_bag!($name, $t)
-     requires $t: Drop`). All use the **associated call** syntax
-     (`IntList::new()`, `IntMap::put(&m, k, v)`, …), and `tests/run.sh` adds
+   * **Done:** klist-backed `IntList` (`klib_list.cx`, `example.cx`);
+     khash-backed `IntMap` (`klib_map.cx`), string-keyed `StrMap`
+     (`klib_strmap.cx`), `IntSet` (`klib_set.cx`) and value-dropping `BoxMap`
+     (`klib_map_drop.cx`); and element-typed `BoxBag`/`BoxVec` (`klib_bag.cx`,
+     `method_with_macro.cx`). Each C macro is a `NAME!(…)` passthrough plus a
+     per-instantiation C helper (`CX_KHASH_*_HELPERS`) for typed accessors over
+     the `void *` handle, so Cx never spells `khash_t(<Name>)`. All use the
+     **associated call** syntax and the `.`-method form, and `tests/run.sh` adds
      `submodules/klib` to the include path. Jump-to-definition / hover for the
      container methods works (macro origins + `Trait::method`).
-   * **Still needed:** an element free/RAII policy that actually invokes the
-     trait on teardown (`klib_bag.cx` checks the `Drop` bound but does not call
-     `drop` from `free`); a user-facing stdlib module (blocked on macro
-     definitions crossing `import` boundaries); `requires` bounds for primitive
-     key/value capabilities; and `.`-method calls (`l.push(…)`) — see item 1 of
-     the Refinement backlog.
-2. A paired `.hx`/`.cx` model (the `.c` includes its header and skips duplicate
-   declarations).
-3. 'auto' keyword where easilly possible. This would be:
-    1. on function return - as function specifies it's return type
-    2. on element creation - as the right side of creation of element specifies
-       the return type.
-4. Write down cx rules, but only the ones that extend the 'c' feature after feature.
+   * **Teardown:** the element free/RAII policy is implemented — the bag's and
+     the map's `free` walk their elements and invoke `drop` through the installed
+     vtable (`klib_bag.cx`, `method_with_macro.cx`, `klib_map_drop.cx`).
+   * **Modules:** the container macros live in reusable `std_*.hx` macro modules —
+     `std_list.hx` (`define_list!`), `std_map.hx` / `std_strmap.hx`
+     (`define_int_map!` / `define_str_map!`), `std_set.hx` / `std_strset.hx`
+     (`define_int_set!` / `define_str_set!`) and `std_vec.hx` (`define_vec!`,
+     element-typed, `requires $t: Drop`, with `drop` on teardown), with
+     `std_drop.hx` exporting the interface. Each carries its own C context
+     (`#include`s and helpers) in the generated header, so the importer needs
+     nothing extra. New examples: `std_demo.cx`, `std_owned_demo.cx`,
+     `std_str_demo.cx`.
+   * **Still needed:** `requires` bounds for primitive key/value capabilities,
+     struct-keyed maps (which need a user hash/equal pair), and a real
+     capacity/growth policy.
+   * **Method spelling:** both the associated `IntList::push(&l, 10)` form and
+     the `.`-method `l.push(10)` form now work (receiver types landed — see
+     Done).
+2. Write down cx rules, but only the ones that extend the 'c' feature after feature.
    Excluding the klib integration - as it's not meant to be final part of extension,
    but an intermediate one - or a building block.
 
@@ -64,30 +79,117 @@ below.
   matches `Trait::member`, is checked, and expands to `Trait->member`. The LSP
   resolves `gd`/hover on a `Type::method` or `Trait::method` pair, on a macro
   invocation, and shows the `//` doc comment above a declaration.
+* **Paired `.hx`/`.cx` model.** Building `foo.cx` detects a sibling `foo.hx`
+  (CLI `sibling_hx`/`replace_ext`) and emits `foo.c` as `#include "foo.h"` plus
+  the definitions only: the preamble, typedefs and struct definitions the header
+  already declares are skipped, while the `.cx`'s own helper prototypes, impl
+  methods/tables, ctor/dtor helpers, function bodies and globals are still
+  emitted. The pair shares its declarations (`foo.hx` = interface, `foo.cx` =
+  interface + bodies), so the generated `.c` compiles against exactly what
+  consumers see (`CxNode.paired_header` carries the include name into
+  `cx_emit_c`). Test: `tests/golden/paired.{hx,cx}` (namespace, trait,
+  ctor/dtor, and an associated method through the vtable).
+* **`auto` return types.** `auto` may now be a function's return type:
+  `infer_auto` (sema) infers it from the first `return expr;` and rewrites the
+  function's symbol, so callers — including `auto` at the call site — see the
+  resolved type. Inference was also widened: a function parameter, a
+  comparison/logical operand (`int`), and a binary arithmetic/bitwise operand
+  (the left operand's type) now resolve. The element-creation half of the item
+  (`auto x = …`) already worked. Test: `tests/golden/auto_return.cx`.
+* **Receiver types → `.`-method calls.** The grammar accepts `recv.method(args)`
+  and `recv->method(args)` (distinguished from field access by the `(`; no
+  `expr '(' …` rule exists, so there is no conflict). Sema's `resolve_receivers`
+  keeps a flat per-function scope of parameters and locals and lowers the call to
+  the associated `Type__method(&recv, args)` (a pointer receiver is passed
+  through). An unresolved receiver is emitted verbatim, so a C function-pointer
+  field call still works. It runs between a silent and a reporting `auto` pass so
+  an `auto` local can be a receiver and `auto x = l.pop();` still infers. Inside a
+  constructor/destructor/`implements` method body `self` is bound to the
+  enclosing struct (as `<Struct> *`), and struct fields are kept out of the local
+  scope. The environment is **block-scoped** (an inner block's locals shadow and
+  are popped at its `}`). Tests: `tests/golden/method.cx`,
+  `tests/golden/self_receiver.cx`, `tests/golden/block_scope.cx`. Still to come:
+  chained `a.b().c()`.
+* **Receiver-type tooling (LSP).** `completion` after `recv.`/`recv->` offers the
+  receiver type's members — instance methods (`Type__member`, filtered to those
+  whose first parameter is the receiver), the struct's **fields**, and its
+  **trait vtable pointers**; `recv.Trait->` offers the trait's methods. `hover`
+  resolves `recv.method` to `Type__method` (and shows `<type> <name>` for a
+  local/parameter, `<type> <field>` for a field, the trait for a vtable pointer,
+  and the trait method for `recv.Trait->method`); `definition` jumps to the
+  method's declaration (preferring the macro origin), a field's declarator, the
+  trait, or the trait method. New helpers:
+  `cx_lsp_dot_at` (splits `recv.member`) and `cx_lsp_base_type` (strips pointer
+  decoration) in `nav.c`, and `cx_sema_receiver_type` (types the receiver from
+  the enclosing function's locals/params, else a global) in `symbols.c`; `>`
+  added to the completion trigger characters. `cx_lsp_receiver_base` (`nav.c`)
+  wraps the lookup and, when the live text is incomplete at the cursor (typing
+  `list.` stops the enclosing function from reducing), reparses a copy with the
+  cursor's line completed so the declaration is still found — so `push` is
+  offered right after `list.`. Still to come: `references`/`rename`.
+* **LSP signature help.** `textDocument/signatureHelp` (trigger characters `(`
+  and `,`) finds the call's argument list (`cx_lsp_call_open_at` in `nav.c`),
+  resolves the callee — `f`, `Type::method`, `recv.method`/`recv->method` — to
+  `Type__method`, and renders the parameter list with the active parameter
+  (dropping a `.`-method's hidden receiver). Advertised via
+  `signatureHelpProvider`.
+* **Container element teardown.** `define_bag!`/`define_vec!`'s `free` now pops
+  each stored `$t *` and invokes `drop` through the installed vtable
+  (`kl_shift_<Name>` in a loop), and `define_obj_map!` (`klib_map_drop.cx`)
+  iterates a klist/khash of `void *` values via a per-instantiation C helper and
+  drops each one. So a `requires $t: Drop` bound now has a matching teardown.
+* **More container variants.** `StrMap` (`klib_strmap.cx`, `KHASH_MAP_INIT_STR`)
+  and `IntSet` (`klib_set.cx`, `KHASH_SET_INIT_INT`) join the int map, with the
+  same per-instantiation C helper pattern and `.`-method spelling. Struct-keyed
+  maps (which need a user hash/equal pair) and a real capacity policy remain.
+* **Macros across `import` boundaries.** `cx_macro_expand` now collects
+  `macro_rules!` definitions from the files a source imports (recursively,
+  cycle-bounded) before expanding it, so an imported `.hx` can export a macro;
+  the importer's own definitions take precedence. Tests:
+  `tests/golden/macro_lib.hx` + `macro_import.cx`. This unblocks a user-facing
+  `std` module.
+* **Container modules (`std_*.hx`).** `std_list.hx` (`define_list!`),
+  `std_map.hx` / `std_strmap.hx` (`define_int_map!` / `define_str_map!`),
+  `std_set.hx` / `std_strset.hx` (`define_int_set!` / `define_str_set!`) and
+  `std_vec.hx` (`define_vec!`, element-typed with `requires $t: Drop` and
+  `drop`-on-teardown) export the container macros as reusable modules, with
+  `std_drop.hx` exporting the `Drop` interface. Each module carries its own C
+  context (the `#include`s and helpers) in the generated header, so an importer
+  needs nothing extra. New examples: `tests/golden/std_demo.cx` (list + int map),
+  `std_owned_demo.cx` (owning vector + int set) and `std_str_demo.cx` (string map
+  + string set).
+* **LSP `documentHighlight` / `references` / `rename`.** Same-file and lexical:
+  they scan the document for whole-word occurrences of the identifier under the
+  cursor, skipping comments and string/char literals, and answer
+  `textDocument/documentHighlight` (each `kind: 1`),
+  `textDocument/references` (`{uri, range}`) and `textDocument/rename` (a
+  `WorkspaceEdit` with a single-file `changes` map of `{range, newText}`). Cross-
+  file `references` (and a binding-aware rename) remain.
+* **`do…while` and the conditional `?:`.** The grammar gained
+  `do stmt while (cond);` (`CX_NODE_DO`; a single-statement body is emitted
+  wrapped in braces) and `cond ? a : b` (`CX_NODE_EXPR_TERNARY`,
+  right-associative, binding tighter than `=` and looser than `||`), with the
+  `do` keyword and the `?` token in the lexer; `infer_type` resolves a ternary
+  through its operands. Tests: `tests/golden/do_while.cx`, `ternary.cx`.
 
 ## Refinement (what can be added next)
 
 Themes are roughly prioritised; see "Suggested order" at the end.
 
-### Receiver types → `.`-method calls (highest leverage)
+### Receiver types → `.`-method calls
 
-Today `Type::func(&l, …)` is the only method spelling because the symbol table
-has no locals. Adding a scope/type environment in `src/sema/scope.c` (locals,
-params, and their declared/inferred types) lets `l.push(10)` lower to `l`'s
-type's `push`. This is the single highest-leverage change: it also unlocks
-dot-completion, hover on a receiver, and `->` methods. Ripples: `src/sema/
-symbols.c`, the grammar (`expr '.' IDENT`), the emitter's call resolution, and
-the LSP.
+Landed: the transpiler lowering (see Done) *and* the LSP tooling
+(dot-completion, hover, `gd`, signature help). What remains is a proper
+block-scoped environment (shadowing, `self` inside `implements`, chained
+`a.b().c()`) and struct *field* completion after `.`. `src/sema/scope.c` is still
+the scaffold; the current environment lives in `resolve_receivers`
+(`src/sema/symbols.c`).
 
 ### Containers / stdlib
 
-* **Element free/RAII policy** — `klib_bag.cx` checks `requires $t: Drop` but
-  `free` never calls `drop`; iterate the list and invoke each element's method
-  through the vtable, and mirror it for `Map` values.
-* **Macro definitions across `import` boundaries** — each file is expanded alone
-  (`cx_macro_expand` per `parse_source`), so a `.hx` cannot export a macro. A
-  shared macro table (or a pre-pass that collects `macro_rules!` from imported
-  files) is the prerequisite for a real `std` module.
+* **`Set<T>` / `Map` variants** — string keys and `Set` landed
+  (`klib_strmap.cx`, `klib_set.cx`); remaining are struct keys (a user
+  hash/equal pair) and a real capacity/growth policy.
 * **Infer the trait from the object** — once receiver types exist, generate
   `($x).<Trait>::<member>` from a `requires $x: A + B` clause so the call site
   can be `both_total!($x)` again, with `A::a` reserved for the ambiguous cases.
@@ -125,22 +227,20 @@ the LSP.
 * **Receiver forms other than `self`** (`&self`, `self_`), which interacts with
   move semantics.
 
-### LSP (builds on receiver types)
+### LSP
 
-* `textDocument/signatureHelp` for `Type::method(...)` and trait methods.
-* `.`/`->` member completion and hover on receivers.
-* `textDocument/references`, `rename`, `documentHighlight`, `semanticTokens`,
-  inlay hints.
-* `codeAction` "implement missing trait method" from the trait's required set.
+* Richer `documentHighlight` kinds (read/write), workspace-wide (cross-file)
+  `references`; `semanticTokens`, inlay hints.
+* Chained receiver calls (`a.b().c()`) and computed receivers.
 * Doc comments (`//`, `///`) attached to **all** hover targets, not just trait
   methods.
+* `codeAction` "implement missing trait method" from the trait's required set.
 * `positionEncoding` negotiation (UTF-16 columns); workspace symbols; call
   hierarchy.
 
 ### Language surface (also see `REQUIRED_FEATURES.md`)
 
-* `do…while`, ternary `?:`, the comma operator, `static`/`extern`/`inline`
-  specifiers, array types.
+* The comma operator, `static`/`extern`/`inline` specifiers, array types.
 * **Multiple value return/unpacking** (`(a, b) = f();`) — lowering to a struct
   return plus per-field unpacking (see "Considered extensions").
 * **Scoped imports** (names only for a scope).
@@ -153,15 +253,19 @@ the LSP.
 * **Golden-output tests** (diff the generated C, not just "does it compile"),
   plus fuzzing `cx_macro_expand` / the parser.
 * `#line`/debug-info polish and a CI target.
-* The paired `.hx`/`.cx` model (ordered item 2).
+* **Paired `.hx`/`.cx` follow-ups**: an out-of-line constructor/destructor
+  definition (so the `.hx` can declare `Counter(int);` / `~Counter();` without a
+  body and the `.cx` provide it), and inter-procedural `.c`-only declaration
+  handling (prototypes for helpers the header does not declare).
 
 ### Suggested order
 
-1. Receiver-type tracking (unblocks `.`-methods, dot-completion, hover).
-2. Container teardown + `Map` variants, and macro definitions across imports.
+1. Struct-keyed maps (user hash/equal) + a capacity/growth policy; then a
+   `std` overview in the docs.
+2. Chained receiver calls and computed receivers.
 3. Trait associated types/constants, then checked `requires` for them.
 4. Macro hygiene + non-greedy fragments.
-5. LSP signature help / references once receiver types land.
+5. Cross-file `references` / binding-aware `rename`.
 
 > **Ordering rationale.** Traits in macros (syntax, recorded requirements,
 > textual member access, **and checked conformance**) are implemented, so

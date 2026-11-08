@@ -45,6 +45,14 @@ macro_rules! define_bag {
         }
 
         void $name::free($name *b) {
+            // Element teardown: pop each stored `$t *` and invoke its `Drop`
+            // method through the installed vtable (an element RAII policy).
+            void *item;
+            while (kl_shift_##$name(b->v, &item) == 0) {
+                $t *p = ($t *) item;
+                void (*dropfn)(void *) = p->Drop->drop;
+                dropfn(p);
+            }
             kl_destroy_##$name(b->v);
             b->v = 0;
             b->n = 0;

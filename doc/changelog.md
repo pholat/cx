@@ -271,3 +271,317 @@ Session log. Append a dated entry per session with the headline changes.
   at `doc/`, and split the original approach decision into `doc/origin.md`.
 * Removed the hand-written klib bridge example (`examples/klib/`); the
   macro-based container examples in `tests/golden/klib_*.cx` supersede it.
+
+### Session 2026-11-08 (paired `.hx`/`.cx` + `auto` return types)
+
+* **Roadmap item 2 — paired `.hx`/`.cx` model.** A `.cx` built by the CLI now
+  detects a sibling `.hx` (`sibling_hx`/`replace_ext`/`file_exists` in
+  `src/cli/main.c`) and records the generated header's include name on the
+  translation unit (`CxNode.paired_header`). `cx_emit_c` then prefixes the
+  output with `#include "foo.h"` and skips phases 0–1 (preamble/trait vtable
+  types, typedefs, struct definitions) while still emitting phase 2 (prototypes,
+  including the `.cx`'s own helpers — a duplicate prototype is legal C) and
+  phases 3–4 (impl methods/tables, ctor/dtor helpers, function bodies, globals).
+  The 1:1 basename mapping is `foo.cx` ⇄ `foo.hx` ⇄ `foo.h`/`foo.c`; a `.cx`
+  without a sibling `.hx` emits the full translation unit as before.
+* **Roadmap item 3 — `auto` return types.** `infer_auto` (sema) now also
+  handles an `auto` **function return type**: it infers from the first
+  `return expr;` in the body and rewrites the function's symbol, so callers
+  (including `auto` at the call site) see the resolved type. `infer_type` was
+  widened to resolve function parameters (looked up in the AST, since they are
+  not in the symbol table), binary comparison/logical operands (`int`), and the
+  left operand of a binary arithmetic/bitwise expression. The element-creation
+  half of the item (`auto x = …`) already worked.
+* Tests: `tests/golden/paired.hx` + `tests/golden/paired.cx` (namespace + trait +
+  ctor/dtor + a vtable call) and `tests/golden/auto_return.cx` (`auto` return
+  from a call, a literal, a parameter expression, and a comparison).
+* Docs: `TECHNICAL.md` §4/§5/§7 and `ROADMAP.md` (both items moved to Done).
+
+### Session 2026-11-08 (receiver types → `.`-method calls)
+
+* **Roadmap — `.`/`->` method calls.** Added `expr '.' IDENT '(' arg_list ')'`
+  and `expr ARROW IDENT '(' arg_list ')'` to the grammar, building a
+  `CX_NODE_EXPR_CALL` that carries the receiver in `lhs` and the `.`/`->` spelling
+  in `type` (the `(` after a member is what tells a call from the existing field
+  access; there is no `expr '(' …` rule, so no conflict).
+* **Sema.** New `resolve_receivers` pass (`src/sema/symbols.c`) with a flat
+  per-function scope (`Scope`: parameters plus locals as encountered, with a
+  global fallback). For `recv.method(args)` whose receiver has a known struct
+  type it emits the associated call `Type__method(&recv, args)`; a pointer
+  receiver is passed through (`p->m(x)` → `Type__m(p, x)`). An unresolved
+  receiver is left as written.
+* **`auto` interplay.** `infer_auto` gained a `report` flag and now runs twice:
+  a silent pass first (so an `auto` local gets a concrete type and can be a
+  receiver), then `resolve_receivers`, then a reporting pass (so
+  `auto x = l.pop();` infers once the method call is lowered) — no duplicate
+  diagnostics.
+* **Emitter.** `emit_expr`'s `CX_NODE_EXPR_CALL` branch emits an unresolved
+  method call (`lhs` set) back as `recv.method(args)`, so a call through a C
+  function-pointer field keeps working.
+* Test: `tests/golden/method.cx` (`.`-method, `auto` receiver, `->`-method
+  through a pointer, associated `::` calls side by side).
+* Docs: `TECHNICAL.md` §4/§6/§7 and `ROADMAP.md` (item moved to Done; the
+  remaining work is the LSP tooling it unlocks).
+
+### Session 2026-11-08 (receiver-type LSP tooling)
+
+* **Dot-completion.** After `recv.`/`recv->`, `textDocument/completion` offers
+  the receiver type's methods (functions named `Type__member`) as bare member
+  names. New `cx_sema_receiver_type` (sema) types the receiver from the enclosing
+  function's locals/parameters (else a global); new `cx_lsp_dot_at` (`nav.c`)
+  splits a `recv.member` access around the cursor, and `cx_lsp_base_type` strips
+  pointer decoration. If the receiver cannot be typed, the general list is
+  offered instead.
+* **Hover.** `recv.method` resolves (via the receiver type) to `Type__method` and
+  renders its signature; hovering a local/parameter now shows `<type> <name>`.
+* **Go-to-definition.** `recv.method` jumps to `Type__method`'s declaration,
+  preferring the macro origin (so `gd` on `l.push` in a klib container lands in
+  the `macro_rules!` body).
+* **Server.** `>` added to the completion `triggerCharacters` (for `->`).
+* No new golden tests (the LSP has no automated harness); the behavior is
+  documented in `TECHNICAL.md` §3 and exercised manually.
+
+### Session 2026-11-08 (LSP signature help)
+
+* **`textDocument/signatureHelp`.** New `src/lsp/features/signature.c`
+  (`cx_lsp_signature_help`). `cx_lsp_call_open_at` (`nav.c`) finds the `(` that
+  opens the argument list around the cursor (a forward scan keeps a stack of open
+  parens, skipping strings and comments) and the 0-based argument index
+  (top-level commas). The callee is then resolved at the `(` via
+  `cx_lsp_scope_at` (`Type::method`), `cx_lsp_dot_at` (`recv.method`), or
+  `cx_lsp_prefix_at` (a plain `f`), and the resulting `Type__method` function's
+  parameter list is rendered. A `.`-method's hidden receiver is dropped so the
+  `activeParameter` maps to the arguments the user typed.
+* **Server.** Advertised `signatureHelpProvider` with trigger characters `(`/`,`
+  and dispatched `textDocument/signatureHelp` (`handle_query` kind 4).
+
+### Session 2026-11-08 (`list.push()` example + dot-completion on incomplete code)
+
+* **Example.** Added `tests/golden/example.cx`: a klib-backed `IntList` filled
+  element by element with the `.`-method spelling
+  (`list.push(1); … list.size(); list.free();`), i.e. `list.push(…)` lowers to
+  `IntList__push(&list, …)`.
+* **LSP dot-completion fix.** While typing `list.` the document is an incomplete
+  expression, so the enclosing function fails to reduce and the local's
+  declaration is absent from the AST — `list.` therefore fell back to the general
+  list (showing `IntList::push`, not `push`). New `cx_lsp_receiver_base`
+  (`nav.c`): it uses `cx_sema_receiver_type` (locals/params, else a global) and,
+  on failure, reparses a copy of the document with the cursor's line completed by
+  `__cx;` (everything before the cursor is preserved), recovering `list`'s
+  declared type. `completion`, `hover`, `definition`, and `signatureHelp` now go
+  through it, so `push`/`pop`/`size`/… are offered right after `list.`.
+* Docs: `TECHNICAL.md` §3 (resolution + caveats).
+
+### Session 2026-11-08 (`method_with_macro.cx`)
+
+* Added `tests/golden/method_with_macro.cx`: the same "fill a container with
+  `.push()`" example, but the container is macro-defined
+  (`define_vec!($name, $t) requires $t: Drop`) and its element type is
+  constrained by an **interface** (the `Drop` trait). `Box implements Drop`;
+  `BoxVec vec` is filled with `vec.push(&a)` / `vec.push(&b)` (each lowering to
+  `BoxVec__push(&vec, &item)`), sized with `vec.size()`, and freed with
+  `vec.free()`; the interface method is reached through the installed vtable
+  (`a.Drop->drop`). Exercises the macro + trait + `.`-method paths together.
+
+### Session 2026-11-08 (struct-field completion)
+
+* **LSP struct-member completion.** After `recv.`/`recv->`, `textDocument/
+  completion` now also offers the receiver struct's **fields** and its **trait
+  vtable pointers** (read straight from the struct declaration's AST, so no
+  symbol-table change was needed) — e.g. after `a.` where `a` is a `Box`, `v`
+  and `Drop` are offered. Previously only macro-generated `Type__member`
+  functions appeared (`vec.push`), so a plain struct showed nothing.
+* Also: `recv.Trait->` now offers the trait's required methods (e.g.
+  `a.Drop->drop`), and dot-methods are filtered to **instance** methods (the
+  first parameter must be the receiver type), so a static `Type__new()` no longer
+  appears after `recv.`.
+* Docs: `TECHNICAL.md` §3, `ROADMAP.md` (tooling + LSP backlog).
+
+### Session 2026-11-08 (field hover + definition)
+
+* **LSP member hover/definition.** Complementing field completion, `hover` and
+  `definition` now handle a struct member access `recv.field`:
+  * hover shows `<type> <field>`; a trait vtable pointer shows
+    ``trait `T` (vtable pointer on `S`)``; `recv.Trait->method` shows the trait
+    method signature;
+  * `gd` jumps to a field's declarator, to the trait declaration (for a vtable
+    pointer), or to the trait method declaration (with a preceding `//` doc
+    comment).
+  Fields are read from the struct's AST declaration (the same source the
+  completion uses), so no symbol-table change was needed.
+
+### Session 2026-11-08 (`self` as a receiver)
+
+* **`self` in method bodies.** `resolve_receivers` (`src/sema/symbols.c`) now
+  walks a struct's constructor/destructor/`implements` method bodies with `self`
+  bound to the enclosing struct as a pointer (`<Struct> *`), so `self.method(x)`
+  lowers to `Type__method(self, x)` (the pointer is passed through, not `&self`).
+  Struct fields are no longer pushed into the local scope (only method bodies are
+  walked). `cx_sema_receiver_type` likewise types `self` — via a new
+  `enclosing_struct_for_self` — so the LSP's completion / hover / `gd` work after
+  `self.`/`self->` in those bodies too.
+* Test: `tests/golden/self_receiver.cx` (`show(self)` calls `self.get()` /
+  `self.set(...)`, which lower to `Counter__get(self)` / `Counter__set(self, …)`).
+* Docs: `TECHNICAL.md` §3/§4/§6/§7, `ROADMAP.md`.
+
+### Session 2026-11-08 (block-scoped receivers)
+
+* **Transpiler.** `resolve_receivers` gained a `CX_NODE_BLOCK` case (save/restore
+  the scope length around a block's statements), so a local declared in an inner
+  block shadows an outer one and is popped at the block's `}`. Previously the
+  environment was flat per function, so an inner declaration leaked past its
+  block and could mis-resolve a later `x.m()`.
+* **LSP.** `cx_sema_receiver_type` now walks the enclosing body with block scope:
+  new `collect_visible` accumulates the bindings visible at the cursor (skipping
+  statements that start after it, popping per block), and the lookup prefers the
+  innermost/most-recent binding (params first, then locals). It also gained an
+  `arena` parameter (for the scratch scope) and now finds the enclosing body
+  owner via `innermost_body_owner` (function **or** constructor/destructor/
+  `implements` method), so locals inside method bodies resolve too.
+* Test: `tests/golden/block_scope.cx` (an inner `B x` shadows an outer `A x`;
+  `x.m()` resolves to `B__m` inside the block and back to `A__m` after it).
+* Docs: `TECHNICAL.md` §3/§4/§6/§7, `ROADMAP.md`.
+
+### Session 2026-11-08 (container element teardown)
+
+* **List/bag RAII.** `define_bag!` (`klib_bag.cx`) and `define_vec!`
+  (`method_with_macro.cx`) now give their `free` an element-teardown policy: it
+  pops each stored `$t *` with `kl_shift_<Name>` and invokes `drop` through the
+  installed vtable (`void (*dropfn)(void *) = p->Drop->drop; dropfn(p);`) before
+  destroying the list. No C helper was needed — a `void *` converts implicitly to
+  the generated `kl_<Name>_t *`.
+* **Map RAII.** New `tests/golden/klib_map_drop.cx`: `define_obj_map!` stores
+  `void *` values (so the `KHASH_MAP_INIT_INT` passthrough never names a Cx
+  struct), with a per-instantiation C helper (`CX_KHASH_PTR_HELPERS`) providing a
+  typed `put` and a `kh_foreach_value` iterator; `free` drops every stored value
+  through its interface, then destroys the table.
+* Docs: `ROADMAP.md` (container item, refinement, suggested order).
+
+### Session 2026-11-08 (container variants: string map + set)
+
+* **`StrMap`** (`tests/golden/klib_strmap.cx`): a string-keyed khash map
+  (`KHASH_MAP_INIT_STR`) from `const char *` to `int`. Keys are not copied by
+  klib, so the caller keeps them alive (string literals). A per-instantiation C
+  helper (`CX_KHASH_STRMAP_HELPERS`) provides `put`/`get`/`has`/`del` over the
+  `void *` handle; the Cx wrapper adds `size`/`free` and uses the `.`-method
+  spelling (`m.put("alpha", 1)`).
+* **`IntSet`** (`tests/golden/klib_set.cx`): an int khash set
+  (`KHASH_SET_INIT_INT`) with `add`/`has`/`del`/`size`/`free`
+  (`CX_KHASH_SET_HELPERS`); `add` returns whether the element was new.
+* Both follow the existing `klib_map.cx` pattern (per-instantiation C helper +
+  `void *` handle, since Cx cannot spell `khash_t(<Name>)`).
+* Docs: `ROADMAP.md` (container Done list, suggested order). Remaining: a real
+  capacity/growth policy, struct-keyed maps (user hash/equal), and the
+  user-facing `std` module (blocked on macro definitions crossing `import`).
+
+### Session 2026-11-08 (macros across `import` boundaries)
+
+* **Feature.** `cx_macro_expand` (`src/macro.c`) now collects `macro_rules!`
+  definitions from the files a source `import`s — recursively and cycle-bounded
+  (`depth > 16`) — into its expander table **before** expanding the source, so a
+  `.hx` can export a macro to its importer. The importer's own definitions are
+  collected by the normal pass, so they take precedence over imported ones of the
+  same name.
+* New helpers in `macro.c`: `collect_imports_from` (tokenize, `scan_defs`,
+  recurse), `find_imports` (a recursive token scan for `import "…"`),
+  `str_unquote`, `resolve_rel` (path relative to a file path or `file://` URI)
+  and `read_file`. A missing/unreadable import is skipped silently.
+* Test: `tests/golden/macro_lib.hx` (the macro) + `macro_import.cx`
+  (`import "macro_lib.hx";` then `define_pair!(IntPair, int)` and use of the
+  generated struct/function).
+* Docs: `TECHNICAL.md` §4/§7, `ROADMAP.md`, `integration.md`. This unblocks a
+  user-facing `std` module.
+
+### Session 2026-11-08 (std container modules)
+
+* **Modules.** Added `tests/golden/std_list.hx` (`define_list!`) and
+  `tests/golden/std_map.hx` (`define_int_map!`) — the container macros packaged
+  as reusable module files now that macros cross `import` boundaries. Each module
+  carries the C context it needs (`#include "klist.h"` / `#include "khash.h"`,
+  the `cx_nofree` pool callback, and the `CX_KHASH_MAP_HELPERS` accessors) in its
+  generated header, so an importer needs nothing extra.
+* **Example.** New `tests/golden/std_demo.cx` (existing examples left untouched):
+  ```
+  import "std_list.hx";
+  import "std_map.hx";
+  define_list!(IntList, int);
+  define_int_map!(IntMap, int);
+  ```
+  then fills/reads through `.`-methods (`l.push(1)`, `l.pop(0)`, `m.put(1, x)`,
+  `m.get(1, 0)`).
+* Docs: `ROADMAP.md` (container item, Done list, suggested order).
+
+### Session 2026-11-08 (std owning containers)
+
+* **Modules.** Added `tests/golden/std_drop.hx` (the `Drop` interface),
+  `std_vec.hx` (element-typed `define_vec!`, `requires $t: Drop`, with
+  `drop`-on-teardown) and `std_set.hx` (`define_int_set!`), joining
+  `std_list.hx`/`std_map.hx`. Each module carries its own C context in the
+  generated header.
+* **Example.** New `tests/golden/std_owned_demo.cx` (existing examples left
+  untouched): imports `std_drop.hx`/`std_vec.hx`/`std_set.hx`, declares a `Box`
+  that `implements Drop`, `define_vec!(BoxVec, Box)` + `define_int_set!(IntSet)`,
+  and exercises `vec.push(&x)` / `vec.free()` (dropping the elements through the
+  interface) and `s.add(1)` / `s.has(2)` / `s.free()`.
+* Docs: `ROADMAP.md`.
+
+### Session 2026-11-08 (std string containers)
+
+* **Modules.** Added `tests/golden/std_strmap.hx` (`define_str_map!`,
+  `KHASH_MAP_INIT_STR`, `const char *` keys → `$v`) and
+  `tests/golden/std_strset.hx` (`define_str_set!`, `KHASH_SET_INIT_STR`), with
+  their own accessor helpers (`CX_KHASH_STRMAP_HELPERS` /
+  `CX_KHASH_STRSET_HELPERS`) over the `void *` handle.
+* **Example.** New `tests/golden/std_str_demo.cx` (existing examples untouched):
+  imports both modules, `define_str_map!(NameMap, int)` +
+  `define_str_set!(NameSet)`, and exercises `m.put("alpha", 1)`,
+  `m.get("alpha", 0)`, `m.has`/`m.del`/`m.size`/`m.free` and
+  `s.add("x")` / `s.has("y")` / `s.free()`.
+* Docs: `ROADMAP.md`.
+
+### Session 2026-11-08 (LSP documentHighlight + references)
+
+* **Feature.** New `src/lsp/features/occurrences.c`: `cx_lsp_document_highlight`
+  and `cx_lsp_references` share one scanner that collects whole-word occurrences
+  of the identifier under the cursor, skipping `//` / `/* */` comments and
+  string/char literals (tracking line/column through them). It is lexical and
+  same-file: `documentHighlight` answers `[{range, kind:1}, …]`, `references`
+  answers `[{uri, range}, …]`.
+* **Server.** Registered `documentHighlightProvider` / `referencesProvider` and
+  dispatched `textDocument/documentHighlight` (`handle_query` kind 5) and
+  `textDocument/references` (kind 6).
+* Docs: `TECHNICAL.md` §2/§3, `ROADMAP.md`. Cross-file `references` and `rename`
+  remain.
+
+### Session 2026-11-08 (LSP rename + self_receiver fix)
+
+* **Fix.** `tests/golden/self_receiver.cx` declared its two associated functions
+  (`Counter__get`/`Counter__set`) *inside* the struct body, which Cx rejects
+  (functions are not struct members), so `make test` failed at that file. They
+  now live at namespace scope; the test still exercises `self.get()` lowering to
+  `Counter__get(self)`.
+* **Feature.** `textDocument/rename`. The occurrence scanner was refactored into
+  `occurrences_body` (mode 0 = `{range, kind}`, 1 = `{uri, range}`, 2 =
+  `{range, newText}`), and `cx_lsp_rename` returns a `WorkspaceEdit` —
+  `{"changes": {"<uri>": [ … ]}}` — with one edit per whole-word occurrence of
+  the identifier under the cursor (same-file, lexical, like `references`),
+  or `null` when the cursor is not on an identifier / there is nothing to rewrite.
+* **Server.** Registered `renameProvider` and dispatched `textDocument/rename`
+  (`handle_query` kind 7, reading `params.newName`).
+* Docs: `TECHNICAL.md` §3, `ROADMAP.md`, `integration.md`.
+
+### Session 2026-11-08 (`do…while` + the conditional `?:`)
+
+* **Grammar.** Added the `DO` token with the rule `DO stmt WHILE '(' expr ')' ';'`
+  (`CX_NODE_DO`; `body` = the statement, `cond` = the condition) and the rule
+  `expr '?' expr ':' expr %prec '?'` (`CX_NODE_EXPR_TERNARY`;
+  `cond`/`lhs`/`rhs`), with `%right '?'` declared between assignment and `||`, so
+  it is right-associative and binds tighter than `=` (like C).
+* **Lexer.** Added the `do` keyword and the `?` punctuation (previously `?` was
+  silently dropped by the catch-all rule).
+* **Emitter.** `emit_stmt` emits `do { … }` followed by `while (cond);` (a
+  single-statement body is wrapped in braces by `emit_branch`); `emit_expr`
+  emits `cond ? a : b`. `infer_type` resolves a ternary through its operands (so
+  `auto x = a ? b : c;` works).
+* **Tests.** `tests/golden/do_while.cx`, `tests/golden/ternary.cx`.
+* Docs: `TECHNICAL.md` §4, `ROADMAP.md`, `plan.md`, `REQUIRED_FEATURES.md`.

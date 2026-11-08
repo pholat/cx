@@ -1,0 +1,40 @@
+namespace demo {
+
+    trait Show {
+        void show(self);
+    }
+
+    struct Counter {
+        int value;
+
+        Counter(int v) {
+            value = v;
+        }
+
+        implements Show {
+            // Inside a method body `self` is the receiver pointer
+            // (`Counter *`), so `self.get()` lowers to `Counter__get(self)`
+            // (a pointer receiver is passed through, not `&self`).
+            void show(self) {
+                int v = self.get();
+                self.set(v + 1);
+            }
+        }
+    };
+
+    int Counter__get(Counter *c) {
+        return c->value;
+    }
+
+    int Counter__set(Counter *c, int v) {
+        c->value = v;
+        return v;
+    }
+
+    int run() {
+        Counter c(3);
+        void (*showfn)(void *) = c.Show->show;
+        showfn(&c);
+        return c.value;
+    }
+}

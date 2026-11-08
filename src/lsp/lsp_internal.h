@@ -40,5 +40,13 @@ int cx_lsp_hover(CxBuf *out, const char *uri, const char *text, size_t len,
                  int line, int character);
 int cx_lsp_completion(CxBuf *out, const char *uri, const char *text, size_t len,
                       int line, int character);
+int cx_lsp_signature_help(CxBuf *out, const char *uri, const char *text,
+                          size_t len, int line, int character);
+int cx_lsp_document_highlight(CxBuf *out, const char *uri, const char *text,
+                              size_t len, int line, int character);
+int cx_lsp_references(CxBuf *out, const char *uri, const char *text, size_t len,
+                      int line, int character);
+int cx_lsp_rename(CxBuf *out, const char *uri, const char *text, size_t len,
+                  int line, int character, const char *new_name);
 
 #endif /* CX_LSP_INTERNAL_H */

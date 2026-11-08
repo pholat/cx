@@ -1,0 +1,21 @@
+namespace demo {
+
+    int max_of(int a, int b) {
+        return a > b ? a : b;
+    }
+
+    // Right-associative: the second `?` is nested in the else position, i.e.
+    // `n > 0 ? 1 : (n < 0 ? -1 : 0)`.
+    int sign(int n) {
+        return n > 0 ? 1 : n < 0 ? -1 : 0;
+    }
+
+    int run() {
+        int hi = max_of(3, 7);
+        int s = sign(-4);
+        // `auto` infers through a ternary (from the then operand, falling back
+        // to the else operand when the then side is a plain local).
+        auto pick = hi > 5 ? hi : 0;
+        return hi + s + pick;
+    }
+}

@@ -82,6 +82,8 @@ int cx_lsp_hover(CxBuf *out, const char *uri, const char *text, size_t len,
     override[0] = '\0';
     char tqual[128];
     tqual[0] = '\0';
+    char member_md[512]; /* a struct field / trait pointer rendered directly */
+    member_md[0] = '\0';
 
     char word[128];
     if (sema && cx_lsp_word_at(text, line + 1, character + 1, word, sizeof word))
@@ -104,35 +106,104 @@ int cx_lsp_hover(CxBuf *out, const char *uri, const char *text, size_t len,
         }
     }
 
-    if (!sym && !tm) {
+    if (!sym && !tm && sema) {
+        char recv[128], dmem[128];
+        if (cx_lsp_dot_at(text, line + 1, character + 1, recv, sizeof recv,
+                          dmem, sizeof dmem) && dmem[0]) {
+            char base[128];
+            const char *bt =
+                cx_lsp_receiver_base(arena, tu, sema, text, uri, line + 1,
+                                     character + 1, recv, base, sizeof base);
+            if (bt) {
+                char full[260];
+                snprintf(full, sizeof full, "%s__%s", bt, dmem);
+                CxSymbol *fn = cx_sema_find_function(sema, full);
+                if (fn) {
+                    sym = fn;
+                    snprintf(override, sizeof override, "%s::%s", bt, dmem);
+                } else {
+                    /* A struct field or a trait vtable pointer. */
+                    CxSymbol *st = cx_sema_find_struct(sema, bt);
+                    CxNode *decl = st ? st->decl : NULL;
+                    for (int i = 0; decl && i < decl->children.len; i++) {
+                        CxNode *m = decl->children.items[i];
+                        if (m->kind == CX_NODE_VAR_DECL) {
+                            for (int k = 0; k < m->children.len; k++) {
+                                CxNode *d = m->children.items[k];
+                                if (d->name && !strcmp(d->name, dmem))
+                                    snprintf(member_md, sizeof member_md,
+                                             "%s %s", m->type ? m->type : "?",
+                                             d->name);
+                            }
+                        } else if (m->kind == CX_NODE_IMPLEMENTS && m->name &&
+                                   !strcmp(m->name, dmem)) {
+                            snprintf(member_md, sizeof member_md,
+                                     "trait `%s` (vtable pointer on `%s`)",
+                                     m->name, bt);
+                        }
+                    }
+                }
+            }
+            /* A trait method reached through a pointer (`recv.Trait->method`):
+             * `recv` then names the trait itself. */
+            if (!sym && !tm && !member_md[0]) {
+                CxNode *tmd = cx_sema_find_trait_method(sema, recv, dmem);
+                if (tmd) {
+                    tm = tmd;
+                    snprintf(tqual, sizeof tqual, "%s", recv);
+                }
+            }
+        }
+    }
+
+    CxBuf md;
+    cx_buf_init(&md);
+    int have = 0;
+
+    if (tm) {
+        /* Lead with the `//` doc comment above the declaration, then the
+         * signature (`Trait::member`). */
+        char doc[1024];
+        if (cx_lsp_doc_above(text, tm->span.first_line, doc, sizeof doc) &&
+            doc[0])
+            cx_buf_printf(&md, "%s\n\n", doc);
+        cx_buf_printf(&md, "%s %s::%s(", tm->type ? tm->type : "void", tqual,
+                      tm->name ? tm->name : "");
+        for (int i = 0; i < tm->params.len; i++) {
+            CxNode *pm = tm->params.items[i];
+            if (i) cx_buf_puts(&md, ", ");
+            if (pm->type) cx_buf_printf(&md, "%s ", pm->type);
+            cx_buf_puts(&md, pm->name ? pm->name : "");
+        }
+        cx_buf_putc(&md, ')');
+        have = 1;
+    } else if (sym) {
+        render_symbol(&md, map, sym, override[0] ? override : NULL);
+        have = 1;
+    } else if (member_md[0]) {
+        cx_buf_puts(&md, member_md);
+        have = 1;
+    } else if (sema && tu) {
+        /* A local/parameter receiver: show `<type> <name>`. */
+        char w[128];
+        if (cx_lsp_word_at(text, line + 1, character + 1, w, sizeof w)) {
+            const char *lt =
+                cx_sema_receiver_type(arena, tu, line + 1, character + 1, w);
+            if (lt) {
+                cx_buf_printf(&md, "%s %s", lt, w);
+                have = 1;
+            }
+        }
+    }
+
+    if (!have) {
         cx_buf_puts(out, "null");
     } else {
-        CxBuf md;
-        cx_buf_init(&md);
-        if (tm) {
-            /* Lead with the `//` doc comment above the declaration, then the
-             * signature (`Trait::member`). */
-            char doc[1024];
-            if (cx_lsp_doc_above(text, tm->span.first_line, doc, sizeof doc) &&
-                doc[0])
-                cx_buf_printf(&md, "%s\n\n", doc);
-            cx_buf_printf(&md, "%s %s::%s(", tm->type ? tm->type : "void",
-                          tqual, tm->name ? tm->name : "");
-            for (int i = 0; i < tm->params.len; i++) {
-                CxNode *pm = tm->params.items[i];
-                if (i) cx_buf_puts(&md, ", ");
-                if (pm->type) cx_buf_printf(&md, "%s ", pm->type);
-                cx_buf_puts(&md, pm->name ? pm->name : "");
-            }
-            cx_buf_putc(&md, ')');
-        } else {
-            render_symbol(&md, map, sym, override[0] ? override : NULL);
-        }
         cx_buf_puts(out, "{\"contents\":{\"kind\":\"markdown\",\"value\":");
         cx_json_write_string(out, md.data ? md.data : "");
         cx_buf_puts(out, "}}");
-        cx_buf_free(&md);
     }
+    cx_buf_free(&md);
 
     cx_diaglist_free(&diags);
     cx_arena_free(arena);

@@ -1,0 +1,35 @@
+namespace demo {
+
+    struct A {
+        int v;
+    };
+
+    struct B {
+        int v;
+    };
+
+    int A__m(A *a) {
+        return a->v;
+    }
+
+    int B__m(B *b) {
+        return b->v + 1;
+    }
+
+    int run() {
+        A x;
+        x.v = 1;
+        int total = x.m(); // -> A__m(&x)
+
+        {
+            // `x` here is a `B`: it shadows the outer `A x` only until the
+            // block's `}`, where the binding is popped.
+            B x;
+            x.v = 2;
+            total += x.m(); // -> B__m(&x)
+        }
+
+        total += x.m(); // -> A__m(&x) again (the inner `x` is out of scope)
+        return total;
+    }
+}

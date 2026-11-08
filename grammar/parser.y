@@ -59,7 +59,7 @@ void yyerror(YYLTYPE *locp, CxParseCtx *ctx, void *scanner, const char *msg);
 %token <macro> MACRO
 %token <macro> ATTRIBUTE
 %token NAMESPACE STRUCT RETURN SCOPE ARROW
-%token IF ELSE WHILE FOR BREAK CONTINUE SIZEOF SWITCH CASE DEFAULT GOTO AUTO
+%token IF ELSE WHILE DO FOR BREAK CONTINUE SIZEOF SWITCH CASE DEFAULT GOTO AUTO
 %token TYPEDEF IMPORT TRAIT IMPLEMENTS SELF
 %token EQ NE LE GE ANDAND OROR
 %token INC DEC PLUSEQ MINUSEQ STAREQ SLASHEQ PERCENTEQ SHL SHR
@@ -76,6 +76,7 @@ void yyerror(YYLTYPE *locp, CxParseCtx *ctx, void *scanner, const char *msg);
 %type <vec>  impl_param_list attributes
 
 %right '=' PLUSEQ MINUSEQ STAREQ SLASHEQ PERCENTEQ
+%right '?'
 %left  OROR
 %left  ANDAND
 %left  '|'
@@ -408,6 +409,8 @@ stmt:
         { $$ = MK(CX_NODE_IF, (@$)); $$->cond = $3; $$->then = $5; $$->els = $7; }
     | WHILE '(' expr ')' stmt
         { $$ = MK(CX_NODE_WHILE, (@$)); $$->cond = $3; $$->body = $5; }
+    | DO stmt WHILE '(' expr ')' ';'
+        { $$ = MK(CX_NODE_DO, (@$)); $$->body = $2; $$->cond = $5; }
     | FOR '(' expr_opt ';' expr_opt ';' expr_opt ')' stmt
         { $$ = MK(CX_NODE_FOR, (@$)); $$->lhs = $3; $$->cond = $5;
           $$->incr = $7; $$->body = $9; }
@@ -457,6 +460,13 @@ expr:
         { $$ = MK(CX_NODE_EXPR_PAREN, (@$)); $$->lhs = $2; }
     | expr '.' IDENT
         { $$ = MK(CX_NODE_EXPR_FIELD, (@$)); $$->lhs = $1; $$->name = $3; }
+    /* `recv.method(args)`: a method call. Sema resolves the receiver's type and
+     * lowers it to the associated call `Type__method(&recv, args)` (a pointer
+     * receiver is passed through). Left unresolved (unknown receiver, e.g. a C
+     * function-pointer field) it is emitted back as `recv.method(args)`. */
+    | expr '.' IDENT '(' arg_list ')' %prec POSTFIX
+        { $$ = MK(CX_NODE_EXPR_CALL, (@$)); $$->lhs = $1; $$->name = $3;
+          $$->type = "."; $$->children = $5; }
     | expr '+' expr
         { $$ = MK(CX_NODE_EXPR_BINARY, (@$)); $$->name = "+"; $$->lhs = $1; $$->rhs = $3; }
     | expr '-' expr
@@ -503,6 +513,11 @@ expr:
         { $$ = MK(CX_NODE_EXPR_UNARY, (@$)); $$->name = "*"; $$->lhs = $2; }
     | expr ARROW IDENT
         { $$ = MK(CX_NODE_EXPR_ARROW, (@$)); $$->lhs = $1; $$->name = $3; }
+    /* `recv->method(args)`: a method call through a pointer receiver. Sema lowers
+     * it to `Type__method(recv, args)` (the pointer is passed through). */
+    | expr ARROW IDENT '(' arg_list ')' %prec POSTFIX
+        { $$ = MK(CX_NODE_EXPR_CALL, (@$)); $$->lhs = $1; $$->name = $3;
+          $$->type = "->"; $$->children = $5; }
     | expr '[' expr ']'
         { $$ = MK(CX_NODE_EXPR_INDEX, (@$)); $$->lhs = $1; $$->rhs = $3; }
     | '(' type ')' expr %prec UDEREF
@@ -521,6 +536,11 @@ expr:
         { $$ = MK(CX_NODE_EXPR_POSTFIX, (@$)); $$->name = "++"; $$->lhs = $1; }
     | expr DEC %prec POSTFIX
         { $$ = MK(CX_NODE_EXPR_POSTFIX, (@$)); $$->name = "--"; $$->lhs = $1; }
+    /* `cond ? then : else` — right-associative, binding tighter than `=` and
+     * looser than `||` (like C). */
+    | expr '?' expr ':' expr %prec '?'
+        { $$ = MK(CX_NODE_EXPR_TERNARY, (@$));
+          $$->cond = $1; $$->lhs = $3; $$->rhs = $5; }
     | expr '=' expr
         { $$ = MK(CX_NODE_EXPR_ASSIGN, (@$)); $$->name = "="; $$->lhs = $1; $$->rhs = $3; }
     | expr PLUSEQ expr

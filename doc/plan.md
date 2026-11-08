@@ -287,22 +287,22 @@ called — declare a `~Type() {}` (even empty) to get one.
 
 * Operators: `+ - * / %`, comparisons `== != < > <= >=`, logical `&& || !`,
   bitwise `& | ^ ~ << >>`, increment/decrement `++ --` (prefix and postfix),
-  assignment `=` with compound `+= -= *= /= %=`, unary `-`, field access `.` and
+  assignment `=` with compound `+= -= *= /= %=`, the conditional `c ? a : b`,
+  unary `-`, field access `.` and
   `->`, subscript `[]`, address-of `&`, dereference `*`, calls, parentheses.
 * Types: a type token — built-ins from a fixed set, or any struct name — plus
   `T *` pointers. The lexer tracks known type names (the C "typedef-name" lexer
   hack), so `T *x` stays unambiguous from the expression `a * b`. Multi-word
   types are concatenated (`unsigned int`, `const char *`).
 * Statements: expression statements, `return`, blocks, `if`/`else`, `while`,
-  `for`, `switch`, `break`, `continue`, `goto`.
+  `do…while`, `for`, `switch`, `break`, `continue`, `goto`.
 * `for` takes the C form `for (init; cond; incr)` where each clause is optional
   (`for (;;)`); declaration-in-init is not supported yet.
 * Preprocessor lines (`#include`, `#define`, …) at the start of a line are
   captured and emitted verbatim at the top of the generated C.
 
 Still missing for heavy C code (see [`REQUIRED_FEATURES.md`](./REQUIRED_FEATURES.md)):
-array types, `do…while`, ternary `?:`, the comma operator, and a fully
-backtracking macro matcher.
+array types, the comma operator, and a fully backtracking macro matcher.
 
 ### 5.2e `macro_rules!` (implemented)
 

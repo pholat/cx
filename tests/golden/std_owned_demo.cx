@@ -1,0 +1,48 @@
+// Owning containers from the `std_*.hx` modules. `std_drop.hx` provides the
+// `Drop` interface the vector requires; `std_vec.hx` and `std_set.hx` provide the
+// container macros. The element type implements the interface, and `vec.free()`
+// invokes `drop` on every stored element.
+import "std_drop.hx";
+import "std_vec.hx";
+import "std_set.hx";
+
+namespace demo {
+
+    struct Box {
+        int v;
+
+        Box(int x) {
+            v = x;
+        }
+
+        implements Drop {
+            void drop(self) {
+                self->v = 0;
+            }
+        }
+    };
+
+    define_vec!(BoxVec, Box);
+    define_int_set!(IntSet);
+
+    int run() {
+        Box a(1);
+        Box b(2);
+
+        BoxVec vec = BoxVec::new();
+        vec.push(&a);
+        vec.push(&b);
+        int n = vec.size();
+        vec.free(); // drops `a` and `b` through their `Drop` interface
+
+        IntSet s = IntSet::new();
+        s.add(1);
+        s.add(2);
+        s.add(1); // duplicate: not counted
+        int has = s.has(2);
+        int k = s.size();
+        s.free();
+
+        return n + has + k + a.v + b.v;
+    }
+}

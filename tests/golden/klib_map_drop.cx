@@ -1,0 +1,103 @@
+#include "khash.h"
+
+// C helpers over a `void *` khash handle (see `klib_map.cx`). Values are stored
+// as `void *`, so the helper never has to spell a Cx struct type; a typed `put`
+// and a value iterator that calls a callback on each stored pointer.
+raw {
+    #define CX_KHASH_PTR_HELPERS(name) \
+        static int cx_##name##_put(void *h, int key, void *value) { \
+            khash_t(name) *t = (khash_t(name) *)h; \
+            int absent = 0; \
+            khint_t it = kh_put_##name(t, key, &absent); \
+            t->vals[it] = value; \
+            return absent; \
+        } \
+        static void cx_##name##_each(void *h, void (*fn)(void *)) { \
+            khash_t(name) *t = (khash_t(name) *)h; \
+            void *v; \
+            kh_foreach_value(t, v, { fn(v); }); \
+        }
+}
+
+// The interface an element type must provide.
+trait Drop {
+    void drop(self);
+}
+
+// A macro-defined, khash-backed map from `int` keys to `$v *` values. On `free`
+// every stored value is dropped through its interface before the table is
+// destroyed — mirroring the list/bag element-teardown policy for `Map` values.
+macro_rules! define_obj_map {
+    ($name:ident, $v:ty) requires $v: Drop => {
+        KHASH_MAP_INIT_INT!($name, void *);
+        CX_KHASH_PTR_HELPERS!($name);
+
+        struct $name {
+            void *h;
+            int n;
+        };
+
+        $name $name::new() {
+            $name m;
+            m.h = kh_init_##$name();
+            m.n = 0;
+            return m;
+        }
+
+        void $name::put($name *m, int key, $v *value) {
+            if (cx_##$name##_put(m->h, key, value) != 0) {
+                m->n += 1;
+            }
+        }
+
+        int $name::size($name *m) {
+            return m->n;
+        }
+
+        // Drop one stored value (through its `Drop` interface).
+        void $name::drop_item(void *item) {
+            $v *p = ($v *) item;
+            void (*dp)(void *) = p->Drop->drop;
+            dp(p);
+        }
+
+        void $name::free($name *m) {
+            cx_##$name##_each(m->h, $name::drop_item);
+            kh_destroy_##$name(m->h);
+            m->h = 0;
+            m->n = 0;
+        }
+    };
+}
+
+namespace demo {
+
+    struct Box {
+        int v;
+
+        Box(int x) {
+            v = x;
+        }
+
+        implements Drop {
+            void drop(self) {
+                self->v = 0;
+            }
+        }
+    };
+
+    define_obj_map!(BoxMap, Box);
+
+    int run() {
+        Box a(1);
+        Box b(2);
+
+        BoxMap m = BoxMap::new();
+        m.put(1, &a);
+        m.put(2, &b);
+        int n = m.size();
+
+        m.free(); // drops `a` and `b` through the interface
+        return n + a.v + b.v;
+    }
+}
