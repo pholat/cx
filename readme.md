@@ -57,3 +57,4 @@ All documentation lives in [`doc/`](./doc).
 | [`doc/integration.md`](./doc/integration.md) | Using Cx from a C build + editor setup. |
 | [`doc/REQUIRED_FEATURES.md`](./doc/REQUIRED_FEATURES.md) | What Cx still lacks for low-level C / klib. |
 | [`doc/origin.md`](./doc/origin.md) | Initial assumptions & the approach decision. |
+| [`doc/LSP.md`](./doc/LSP.md) | LSP features documentation. |

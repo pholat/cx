@@ -620,3 +620,18 @@ Session log. Append a dated entry per session with the headline changes.
 * **Roadmap.** That was the last ordered item, so the `Ordered items` section
   now reads "all complete"; `RULES.md` is linked from `ROADMAP.md`,
   `readme.md`, and `TECHNICAL.md`.
+
+### Session 2026-11-08 (roadmap backlog becomes the new ordered items)
+
+* **Roadmap.** Rebuilt the `## Ordered items` section into the next backlog:
+  every leftover proposition from the Refinement themes and the "Considered
+  extensions" list is now a flat, prioritised 14-item list — struct-keyed maps +
+  capacity policy, chained receivers, trait associated types/constants, macro
+  hygiene + non-greedy fragments, cross-file `references`/binding-aware
+  `rename`, `for` over containers, infer-trait-from-object, more fragments +
+  nested repetitions, macro-definition doc comments/indexing, more trait
+  features, LSP polish, language surface, tooling, and the not-committed
+  considered extensions. Each entry names its theme for the detail below.
+* Folded the old "Suggested order" list into it (the Refinement section now
+  points back at **Ordered items**), refreshed the ordering rationale, and
+  dropped a stale `Map`/`Set` bullet (string keys and `Set` landed).

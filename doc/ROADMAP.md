@@ -31,8 +31,60 @@ below.
 
 ## Ordered items
 
-All ordered items are complete — see the Done list below; the **Refinement**
-backlog holds what can be added next.
+The original ordered items (containers, rules) are done — see the Done list
+below. What follows is the **next** backlog, flattened and roughly prioritised;
+the **Refinement** section below carries the detail for each theme. Items are
+grouped by theme, not strict serial order.
+
+1. **Struct-keyed maps** (a user-supplied hash/equal pair) and a real
+   **capacity/growth policy** for the container layer; then a `std` overview in
+   the docs. *Containers / stdlib.*
+2. **Chained receiver calls** (`a.b().c()`) and **computed receivers**.
+   *Receiver types.*
+3. **Trait associated types/constants** (`trait Iterable { type Item; … }`),
+   then checked `requires` for them. *Traits.*
+4. **Macro hygiene** (fresh-name renaming so a body's `$t *tmp` cannot capture a
+   caller's name) and **non-greedy fragments** (so `($k:expr => $v:expr)` can be
+   written). *Macro system.*
+5. **Cross-file (workspace) `references`** and a **binding-aware `rename`**.
+   *LSP.*
+6. **`for` over containers** — an iterator protocol lowering to `at`/`len` (or a
+   `next` method) trait members. *Containers / stdlib.*
+7. **Infer the trait from the object** — generate `($x).<Trait>::<member>` from a
+   `requires $x: A + B` clause so the call site can be `both_total!($x)` again.
+   *Containers / stdlib.*
+8. **More macro fragments** (`$x:block`, `$x:item`) and **nested repetitions**
+   (`$( $( … )* )*`). *Macro system.*
+9. **Doc comments on macro definitions** (`/// …`) surfaced for hover, and
+   **LSP indexing of macro definitions** (they are gone before the AST, so
+   `documentSymbol`/rename cannot see them). *Macro system.*
+10. **More traits**: supertraits and default method bodies; postfix vtable calls
+    (`x.T->m(a)` / `x.m(a)`); derived/blanket implementations (e.g.
+    auto-`Equatable` for POD structs); receiver forms other than `self`
+    (`&self`, `self_`). *Traits.*
+11. **LSP polish**: read/write `documentHighlight` kinds; `semanticTokens`; inlay
+    hints; doc comments (`//`, `///`) on **all** hover targets, not just trait
+    methods; `codeAction` "implement missing trait method"; `positionEncoding`
+    (UTF-16 columns) negotiation; workspace symbols; call hierarchy. *LSP.*
+12. **Language surface**: the comma operator; `static`/`extern`/`inline`
+    specifiers; array types; **multiple value return/unpacking**
+    (`(a, b) = f();`); **scoped imports** (names only for a scope); `defer`.
+    *Language surface.*
+13. **Tooling / infrastructure**: a **compile database**
+    (`compile_commands.json`) so clangd resolves the generated C; **golden-output
+    tests** (diff the generated C, not just "does it compile") plus fuzzing
+    `cx_macro_expand` / the parser; `#line`/debug-info polish and a CI target;
+    **paired `.hx`/`.cx` follow-ups** (out-of-line constructor/destructor
+    definitions so the `.hx` can declare `Counter(int);` / `~Counter();`, and
+    `.c`-only helper prototypes the header does not declare). *Tooling.*
+14. **Considered extensions (not committed)** — see that section at the end: a
+    **static map** (fixed size, indexable, optional length check); an **AVL/RB
+    map** for anything providing an interface; **`#[cast]` / `cast[type]`**
+    cast sugar (optional 2-parameter, compile-time checked); **FSM syntax**
+    (`StateA -> StateB : Event [Guard] / Action` → state/event enums, a
+    machine struct with guard/action/context and `process_event`/`reset`/
+    `get_state`); **`#[str]`** (auto-generate a `c_str(enum)` switch over the
+    element names).
 
 ## Done
 
@@ -41,7 +93,9 @@ backlog holds what can be added next.
   to the metavariable must implement every required trait (the trait must exist);
   an **`ident`/`path`** binding that names no struct is a function and must name
   one of the trait's methods (`requires $a: A` for the function `a` passed as
-  A's method). Built-ins/unknown types are skipped. Positive tests:
+  A's method). Unknown types are skipped; primitives are checked against the
+  built-in capability traits (see the `requires` bounds on primitives bullet
+  below). Positive tests:
   `tests/golden/traits_make_total.cx` (`make_total!(total, Row)`; `Row: Iterable`)
   and `tests/golden/macro_requires.cx` (`both_total!($x, A::a, B::b)`;
   `$a: A, $b: B`). Negative tests: `tests/golden/macro_requires_fail.fail.cx`
@@ -168,7 +222,8 @@ backlog holds what can be added next.
 
 ## Refinement (what can be added next)
 
-Themes are roughly prioritised; see "Suggested order" at the end.
+Themes with their detail. The flat, prioritised order is in **Ordered items** at
+the top of this file.
 
 ### Receiver types → `.`-method calls
 
@@ -181,16 +236,14 @@ still the scaffold; the current environment lives in `resolve_receivers`
 
 ### Containers / stdlib
 
-* **`Set<T>` / `Map` variants** — string keys and `Set` landed
+* **Struct-keyed maps + capacity policy** — string keys and `Set` landed
   (`klib_strmap.cx`, `klib_set.cx`); remaining are struct keys (which need a
   user hash/equal pair) and a real capacity/growth policy. `requires` bounds on
-  primitives are now checked against the built-in capability traits
-  (`Hashable`, `Equatable`, `Comparable`, `Ordered`) — see Done.
-* **Infer the trait from the object** — once receiver types exist, generate
-  `($x).<Trait>::<member>` from a `requires $x: A + B` clause so the call site
-  can be `both_total!($x)` again, with `A::a` reserved for the ambiguous cases.
-* **`Map` variants** for string/struct keys (`KHASH_MAP_INIT_STR`), and a real
-  capacity/size policy; `Set<T>`.
+  primitives are checked against the built-in capability traits (`Hashable`,
+  `Equatable`, `Comparable`, `Ordered`) — see Done.
+* **Infer the trait from the object** — generate `($x).<Trait>::<member>` from a
+  `requires $x: A + B` clause so the call site can be `both_total!($x)` again,
+  with `A::a` reserved for the ambiguous cases.
 * **`for` over containers** — an iterator protocol lowering to `at`/`len` (or a
   `next` method) trait members.
 
@@ -252,22 +305,13 @@ still the scaffold; the current environment lives in `resolve_receivers`
   body and the `.cx` provide it), and inter-procedural `.c`-only declaration
   handling (prototypes for helpers the header does not declare).
 
-### Suggested order
-
-1. Struct-keyed maps (user hash/equal) + a capacity/growth policy; then a
-   `std` overview in the docs.
-2. Chained receiver calls and computed receivers.
-3. Trait associated types/constants, then checked `requires` for them.
-4. Macro hygiene + non-greedy fragments.
-5. Cross-file `references` / binding-aware `rename`.
-
 > **Ordering rationale.** Traits in macros (syntax, recorded requirements,
 > textual member access, **and checked conformance**) are implemented, so
 > container macros are written against the final spelling. The checked half is a
-> first cut: it verifies concrete types that resolve to a struct and skips
-> built-ins/unknowns. Deeper work (associated types/constants, resolving
-> namespaced types, bounds for primitive elements) is folded into the container
-> items above.
+> first cut: it verifies concrete types that resolve to a struct, and primitives
+> against the built-in capability traits, and skips only types it does not know.
+> Deeper work (associated types/constants, resolving namespaced types) is folded
+> into the trait items above.
 
 ## Generics & macros (design note — under discussion)
 
