@@ -13,25 +13,40 @@ the transpiler uses.
   .cx / .hx
      │
      ▼
- ┌─────────┐    ┌──────────┐    ┌────────┐    ┌─────────┐
- │  Lexer  │───▶│  Parser  │───▶│  AST   │───▶│  Sema   │
- │ (Flex)  │    │ (Bison)  │    │ shared │    │ symbols │
- └─────────┘    └──────────┘    └────────┘    │ + RAII  │
-                                              └────┬────┘
-                                    ┌──────────────┴──────────────┐
-                                    ▼                             ▼
-                              ┌───────────┐                 ┌───────────┐
-                              │  Codegen  │                 │ LSP server│
-                              │ generic C │                 │ (cx lsp)  │
-                              └─────┬─────┘                 └─────┬─────┘
-                                    ▼                             ▼
-                             build/*.c, build/*.h        diagnostics, gd,
-                             (+ #line back to .cx)       hover, completion
+┌─────────┐    ┌──────────┐    ┌────────┐    ┌─────────┐
+│  Lexer  │───▶│  Parser  │───▶│  AST   │───▶│  Sema   │
+│ (Flex)  │    │ (Bison)  │    │ shared │    │ symbols │
+└─────────┘    └──────────┘    └────────┘    │ + RAII  │
+                                             └────┬────┘
+                                   ┌──────────────┴──────────────┐
+                                   ▼                             ▼
+                             ┌───────────┐                 ┌───────────┐
+                             │  Codegen  │                 │ LSP server│
+                             │ generic C │                 │ (cx lsp)  │
+                             └─────┬─────┘                 └─────┬─────┘
+                                   ▼                             ▼
+                            build/*.c, build/*.h        diagnostics, gd,
+                            (+ #line back to .cx)       hover, completion
 ```
 
 The **AST + semantic layer is the contract**: the C backend and the language
 server are two consumers of the *same* tree, so editor diagnostics cannot
 diverge from what the transpiler accepts.
+
+## Why a transpiler
+
+Cx adds syntax that Clang/GCC's C frontends cannot parse (`namespace`,
+`~Dtor()`, `trait`, `implements`, `#[…]`, `macro_rules!`). Rather than patch a
+compiler, Cx is a Flex/Bison source-to-source transpiler:
+
+- the output is plain C, so it works with any compiler version;
+- the same reentrant parser powers the LSP, so there is one grammar and no
+  backend/editor drift;
+- Clang stays optional — a semantic verifier after transpilation, never the
+  frontend.
+
+The approach rationale (why a transpiler, why a shared AST) is summarized in
+[`doc/technical.md`](./doc/technical.md) §1.
 
 ## Quick start
 
@@ -41,20 +56,22 @@ make test       # transpile + compile every tests/golden/*.cx
 ./cx build file.cx -o file.c
 ```
 
+A runnable, end-to-end example (generated C + RAII + a klib-backed list) lives
+in [`tests/example/`](./tests/example): `make run` there after building `./cx`.
+
 ## Documentation
 
-All documentation lives in [`doc/`](./doc).
+All documentation lives in [`doc/`](./doc). Filenames are **lowercase
+kebab-case**.
 
 | Doc | Contents |
 | :-- | :-- |
-| [`doc/TECHNICAL.md`](./doc/TECHNICAL.md) | **Start here.** Living map of the codebase: language surface, codegen, semantics, gotchas. |
-| [`doc/RULES.md`](./doc/RULES.md) | Rule-by-rule summary of the language extensions over C. |
-| [`doc/ROADMAP.md`](./doc/ROADMAP.md) | Priorities, ordering rationale, and the **Refinement** backlog. |
+| [`doc/technical.md`](./doc/technical.md) | **Start here.** Living map of the codebase: build, codegen passes, sema, gotchas. |
+| [`doc/language.md`](./doc/language.md) | The implemented language surface, rule by rule (syntax → lowering). |
+| [`doc/roadmap.md`](./doc/roadmap.md) | Priorities, known issues, and the **Refinement** backlog. |
 | [`doc/changelog.md`](./doc/changelog.md) | Session log / history. |
-| [`doc/GENERICS.md`](./doc/GENERICS.md) | Traits, attributes, generics design. |
-| [`doc/MACRO_RULES.md`](./doc/MACRO_RULES.md) | `macro_rules!` design. |
-| [`doc/plan.md`](./doc/plan.md) | Original implementation plan / architecture. |
+| [`doc/generics.md`](./doc/generics.md) | Traits, attributes, generics rationale. |
+| [`doc/macro-rules.md`](./doc/macro-rules.md) | `macro_rules!` reference. |
 | [`doc/integration.md`](./doc/integration.md) | Using Cx from a C build + editor setup. |
-| [`doc/REQUIRED_FEATURES.md`](./doc/REQUIRED_FEATURES.md) | What Cx still lacks for low-level C / klib. |
-| [`doc/origin.md`](./doc/origin.md) | Initial assumptions & the approach decision. |
-| [`doc/LSP.md`](./doc/LSP.md) | LSP features documentation. |
+| [`doc/lsp.md`](./doc/lsp.md) | LSP features and resolution order. |
+| [`doc/required-features.md`](./doc/required-features.md) | Remaining low-level C / klib gaps. |

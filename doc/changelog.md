@@ -1,12 +1,12 @@
 # Cx — Changelog
 
 Session log. Append a dated entry per session with the headline changes.
-(Moved here from `TECHNICAL.md` §9.)
+(Moved here from `technical.md` §9.)
 
 ### Session 2026-11-06 (initial)
 
-* Evaluated approaches; chose **Flex/Bison transpiler**; wrote `readme.md`
-  decision + `plan.md`.
+* Evaluated approaches; chose **Flex/Bison transpiler**; wrote the initial
+  decision notes (later folded into `readme.md` and `technical.md`).
 * Scaffolded the project: headers, arena/AST, diag, buf, sema (symbols/scope/
   raii), codegen (mangle/line_map/c_emitter), LSP skeleton, CLI, Makefile,
   examples, golden tests.
@@ -26,7 +26,7 @@ Session log. Append a dated entry per session with the headline changes.
 * Emission reordered to four passes (structs → protos → helpers → bodies) to
   enable struct-by-value returns and member ctor calls.
 * klib (`submodules/klib`): added `klib_bridge.{c,h}` + `list.cx`/`map.cx`
-  wrappers and `REQUIRED_FEATURES.md`.
+  wrappers and `required-features.md`.
 * Roadmap item 1: **casts `(T)expr`** and **`sizeof`** (`CAST`/`SIZEOF` nodes;
   `casts.cx` test).
 * Roadmap item 2: **`switch`/`case`/`default`**, **`goto`** and labels
@@ -56,7 +56,7 @@ Session log. Append a dated entry per session with the headline changes.
 * **LSP completion**: `textDocument/completion` (symbol table + keywords,
   prefix-filtered; `completionProvider` advertised). `features/completion.c`,
   `cx_lsp_prefix_at`.
-* **Planning**: added [`MACRO_RULES.md`](./MACRO_RULES.md) (Rust-style
+* **Planning**: added [`macro-rules.md`](./macro-rules.md) (Rust-style
   `macro_rules!` design) and linked it from the roadmap; set direction to
   C-interop (`raw { … }` + macro-invocation passthrough) + `macro_rules!`, with
   klib as the container backend.
@@ -158,7 +158,7 @@ Session log. Append a dated entry per session with the headline changes.
   after containers (deferred conformance check, so it targets real container
   requirements and associated types); (3) paired `.hx`/`.cx`.
 * **Docs:** moved the roadmap and the generics/macros design note out of
-  `TECHNICAL.md` §8 into [`ROADMAP.md`](./ROADMAP.md); §8 is now a pointer.
+  `technical.md` §8 into [`roadmap.md`](./roadmap.md); §8 is now a pointer.
 * **Containers (start):** added `tests/golden/klib_list.cx`, a macro-defined
   `IntList` over klib's `klist.h`. The macro emits `KLIST_INIT!` (C passthrough)
   and wrappers around `kl_init_<Name>` / `kl_pushp_<Name>` / `kl_shift_<Name>` /
@@ -179,7 +179,7 @@ Session log. Append a dated entry per session with the headline changes.
   functions and `struct $name`). `definition` is wired to prefer that origin, but
   **jump-to-definition for the macro-generated `IntList` methods in
   `klib_list.cx` is still broken** and remains an open LSP issue (see
-  `ROADMAP.md`).
+  `roadmap.md`).
 
 ### Session 2026-11-07 (checked `requires` + klib containers)
 
@@ -267,8 +267,9 @@ Session log. Append a dated entry per session with the headline changes.
 ### Session 2026-11-07 (docs reorganisation)
 
 * Moved all docs except `readme.md` into `doc/`; the session log moved here from
-  `TECHNICAL.md`. Added a root `readme.md` with an architecture diagram pointing
-  at `doc/`, and split the original approach decision into `doc/origin.md`.
+  `technical.md`. Added a root `readme.md` with an architecture diagram pointing
+  at `doc/`, and split the original approach decision into a separate note
+  (later folded into `readme.md` / `technical.md`).
 * Removed the hand-written klib bridge example (`examples/klib/`); the
   macro-based container examples in `tests/golden/klib_*.cx` supersede it.
 
@@ -295,7 +296,7 @@ Session log. Append a dated entry per session with the headline changes.
 * Tests: `tests/golden/paired.hx` + `tests/golden/paired.cx` (namespace + trait +
   ctor/dtor + a vtable call) and `tests/golden/auto_return.cx` (`auto` return
   from a call, a literal, a parameter expression, and a comparison).
-* Docs: `TECHNICAL.md` §4/§5/§7 and `ROADMAP.md` (both items moved to Done).
+* Docs: `technical.md` §4/§5/§7 and `roadmap.md` (both items moved to Done).
 
 ### Session 2026-11-08 (receiver types → `.`-method calls)
 
@@ -320,7 +321,7 @@ Session log. Append a dated entry per session with the headline changes.
   function-pointer field keeps working.
 * Test: `tests/golden/method.cx` (`.`-method, `auto` receiver, `->`-method
   through a pointer, associated `::` calls side by side).
-* Docs: `TECHNICAL.md` §4/§6/§7 and `ROADMAP.md` (item moved to Done; the
+* Docs: `technical.md` §4/§6/§7 and `roadmap.md` (item moved to Done; the
   remaining work is the LSP tooling it unlocks).
 
 ### Session 2026-11-08 (receiver-type LSP tooling)
@@ -339,7 +340,7 @@ Session log. Append a dated entry per session with the headline changes.
   the `macro_rules!` body).
 * **Server.** `>` added to the completion `triggerCharacters` (for `->`).
 * No new golden tests (the LSP has no automated harness); the behavior is
-  documented in `TECHNICAL.md` §3 and exercised manually.
+  documented in `technical.md` §3 and exercised manually.
 
 ### Session 2026-11-08 (LSP signature help)
 
@@ -370,7 +371,7 @@ Session log. Append a dated entry per session with the headline changes.
   `__cx;` (everything before the cursor is preserved), recovering `list`'s
   declared type. `completion`, `hover`, `definition`, and `signatureHelp` now go
   through it, so `push`/`pop`/`size`/… are offered right after `list.`.
-* Docs: `TECHNICAL.md` §3 (resolution + caveats).
+* Docs: `technical.md` §3 (resolution + caveats).
 
 ### Session 2026-11-08 (`method_with_macro.cx`)
 
@@ -395,7 +396,7 @@ Session log. Append a dated entry per session with the headline changes.
   `a.Drop->drop`), and dot-methods are filtered to **instance** methods (the
   first parameter must be the receiver type), so a static `Type__new()` no longer
   appears after `recv.`.
-* Docs: `TECHNICAL.md` §3, `ROADMAP.md` (tooling + LSP backlog).
+* Docs: `technical.md` §3, `roadmap.md` (tooling + LSP backlog).
 
 ### Session 2026-11-08 (field hover + definition)
 
@@ -422,7 +423,7 @@ Session log. Append a dated entry per session with the headline changes.
   `self.`/`self->` in those bodies too.
 * Test: `tests/golden/self_receiver.cx` (`show(self)` calls `self.get()` /
   `self.set(...)`, which lower to `Counter__get(self)` / `Counter__set(self, …)`).
-* Docs: `TECHNICAL.md` §3/§4/§6/§7, `ROADMAP.md`.
+* Docs: `technical.md` §3/§4/§6/§7, `roadmap.md`.
 
 ### Session 2026-11-08 (block-scoped receivers)
 
@@ -440,7 +441,7 @@ Session log. Append a dated entry per session with the headline changes.
   `implements` method), so locals inside method bodies resolve too.
 * Test: `tests/golden/block_scope.cx` (an inner `B x` shadows an outer `A x`;
   `x.m()` resolves to `B__m` inside the block and back to `A__m` after it).
-* Docs: `TECHNICAL.md` §3/§4/§6/§7, `ROADMAP.md`.
+* Docs: `technical.md` §3/§4/§6/§7, `roadmap.md`.
 
 ### Session 2026-11-08 (container element teardown)
 
@@ -455,7 +456,7 @@ Session log. Append a dated entry per session with the headline changes.
   struct), with a per-instantiation C helper (`CX_KHASH_PTR_HELPERS`) providing a
   typed `put` and a `kh_foreach_value` iterator; `free` drops every stored value
   through its interface, then destroys the table.
-* Docs: `ROADMAP.md` (container item, refinement, suggested order).
+* Docs: `roadmap.md` (container item, refinement, suggested order).
 
 ### Session 2026-11-08 (container variants: string map + set)
 
@@ -470,7 +471,7 @@ Session log. Append a dated entry per session with the headline changes.
   (`CX_KHASH_SET_HELPERS`); `add` returns whether the element was new.
 * Both follow the existing `klib_map.cx` pattern (per-instantiation C helper +
   `void *` handle, since Cx cannot spell `khash_t(<Name>)`).
-* Docs: `ROADMAP.md` (container Done list, suggested order). Remaining: a real
+* Docs: `roadmap.md` (container Done list, suggested order). Remaining: a real
   capacity/growth policy, struct-keyed maps (user hash/equal), and the
   user-facing `std` module (blocked on macro definitions crossing `import`).
 
@@ -489,7 +490,7 @@ Session log. Append a dated entry per session with the headline changes.
 * Test: `tests/golden/macro_lib.hx` (the macro) + `macro_import.cx`
   (`import "macro_lib.hx";` then `define_pair!(IntPair, int)` and use of the
   generated struct/function).
-* Docs: `TECHNICAL.md` §4/§7, `ROADMAP.md`, `integration.md`. This unblocks a
+* Docs: `technical.md` §4/§7, `roadmap.md`, `integration.md`. This unblocks a
   user-facing `std` module.
 
 ### Session 2026-11-08 (std container modules)
@@ -509,7 +510,7 @@ Session log. Append a dated entry per session with the headline changes.
   ```
   then fills/reads through `.`-methods (`l.push(1)`, `l.pop(0)`, `m.put(1, x)`,
   `m.get(1, 0)`).
-* Docs: `ROADMAP.md` (container item, Done list, suggested order).
+* Docs: `roadmap.md` (container item, Done list, suggested order).
 
 ### Session 2026-11-08 (std owning containers)
 
@@ -523,7 +524,7 @@ Session log. Append a dated entry per session with the headline changes.
   that `implements Drop`, `define_vec!(BoxVec, Box)` + `define_int_set!(IntSet)`,
   and exercises `vec.push(&x)` / `vec.free()` (dropping the elements through the
   interface) and `s.add(1)` / `s.has(2)` / `s.free()`.
-* Docs: `ROADMAP.md`.
+* Docs: `roadmap.md`.
 
 ### Session 2026-11-08 (std string containers)
 
@@ -537,7 +538,7 @@ Session log. Append a dated entry per session with the headline changes.
   `define_str_set!(NameSet)`, and exercises `m.put("alpha", 1)`,
   `m.get("alpha", 0)`, `m.has`/`m.del`/`m.size`/`m.free` and
   `s.add("x")` / `s.has("y")` / `s.free()`.
-* Docs: `ROADMAP.md`.
+* Docs: `roadmap.md`.
 
 ### Session 2026-11-08 (LSP documentHighlight + references)
 
@@ -550,7 +551,7 @@ Session log. Append a dated entry per session with the headline changes.
 * **Server.** Registered `documentHighlightProvider` / `referencesProvider` and
   dispatched `textDocument/documentHighlight` (`handle_query` kind 5) and
   `textDocument/references` (kind 6).
-* Docs: `TECHNICAL.md` §2/§3, `ROADMAP.md`. Cross-file `references` and `rename`
+* Docs: `technical.md` §2/§3, `roadmap.md`. Cross-file `references` and `rename`
   remain.
 
 ### Session 2026-11-08 (LSP rename + self_receiver fix)
@@ -568,7 +569,7 @@ Session log. Append a dated entry per session with the headline changes.
   or `null` when the cursor is not on an identifier / there is nothing to rewrite.
 * **Server.** Registered `renameProvider` and dispatched `textDocument/rename`
   (`handle_query` kind 7, reading `params.newName`).
-* Docs: `TECHNICAL.md` §3, `ROADMAP.md`, `integration.md`.
+* Docs: `technical.md` §3, `roadmap.md`, `integration.md`.
 
 ### Session 2026-11-08 (`do…while` + the conditional `?:`)
 
@@ -584,7 +585,7 @@ Session log. Append a dated entry per session with the headline changes.
   emits `cond ? a : b`. `infer_type` resolves a ternary through its operands (so
   `auto x = a ? b : c;` works).
 * **Tests.** `tests/golden/do_while.cx`, `tests/golden/ternary.cx`.
-* Docs: `TECHNICAL.md` §4, `ROADMAP.md`, `plan.md`, `REQUIRED_FEATURES.md`.
+* Docs: `language.md`, `roadmap.md`, `required-features.md`.
 
 ### Session 2026-11-08 (roadmap tidy + primitive `requires`)
 
@@ -603,11 +604,11 @@ Session log. Append a dated entry per session with the headline changes.
   skipped before). Unknown C types still skip.
 * Tests: `tests/golden/primitive_requires.cx` (positive),
   `tests/golden/primitive_requires_fail.fail.cx` (negative).
-* Docs: `TECHNICAL.md` §4/§6, `ROADMAP.md`.
+* Docs: `technical.md` §4/§6, `roadmap.md`.
 
-### Session 2026-11-08 (`RULES.md` — the last ordered item)
+### Session 2026-11-08 (language reference — the last ordered item)
 
-* **Doc.** New [`RULES.md`](./RULES.md): a rule-by-rule summary of the language
+* **Doc.** New `rules.md` (now [`language.md`](./language.md)): a rule-by-rule summary of the language
   extensions over C, each stated as syntax → lowering, with notes —
   `namespace`, constructors/destructors + RAII (incl. `#[cleanup]`), associated
   calls `Type::method(…)`, receiver methods `recv.method(…)`, static traits
@@ -618,8 +619,8 @@ Session log. Append a dated entry per session with the headline changes.
   extension / differences" section. It excludes the klib container layer, as
   the ordered item required.
 * **Roadmap.** That was the last ordered item, so the `Ordered items` section
-  now reads "all complete"; `RULES.md` is linked from `ROADMAP.md`,
-  `readme.md`, and `TECHNICAL.md`.
+  now reads "all complete"; `language.md` is linked from `roadmap.md`,
+  `readme.md`, and `technical.md`.
 
 ### Session 2026-11-08 (roadmap backlog becomes the new ordered items)
 
@@ -635,3 +636,27 @@ Session log. Append a dated entry per session with the headline changes.
 * Folded the old "Suggested order" list into it (the Refinement section now
   points back at **Ordered items**), refreshed the ordering rationale, and
   dropped a stale `Map`/`Set` bullet (string keys and `Set` landed).
+
+### Session 2026-11-08 (documentation cleanup)
+
+* **Removed obsolete docs.** Deleted `plan.md` and `origin.md` (their still-valid
+  rationale is folded into `readme.md` and `technical.md` §1) and the
+  unlinked `FIX.md` scratchpad (its macro-`gd` issue is now under
+  `roadmap.md` *Known issues*).
+* **One naming format.** All doc filenames are now lowercase kebab-case:
+  `technical.md`, `language.md`, `roadmap.md`, `changelog.md`, `generics.md`,
+  `macro-rules.md`, `lsp.md`, `integration.md`, `required-features.md`.
+* **One owner per topic.** The full language surface now lives in
+  `language.md` (previously split between `RULES.md` and `technical.md` §4);
+  `technical.md` keeps codegen/sema/gotchas and links out. `generics.md` is now
+  design rationale only; `macro-rules.md` is the single macro reference;
+  `lsp.md` owns LSP features and `integration.md` owns editor/build setup.
+  `required-features.md` is reduced to the remaining C/klib gaps.
+* **Roadmap trimmed.** The dated Done list now lives only in this changelog;
+  `roadmap.md` keeps the ordered table, known issues, refinement themes and
+  considered extensions.
+* **Stale claims fixed.** Removed the false "RAII cleanup suppressed on return
+  by value" note, corrected `MACRO_RULES.md`'s "definitions do not cross import"
+  status, and documented that traits are exercised in
+  `macro_requires.cx`, `traits_macro.cx`, `traits_make_total.cx` and
+  `std_vec.hx`.

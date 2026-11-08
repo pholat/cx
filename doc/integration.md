@@ -6,20 +6,14 @@ struct destructors, static traits and macros, and `cx` transpiles them to
 compiles. There is no runtime, no special linker step, and no compiler fork —
 the output is plain `.c`.
 
-This guide covers:
-
-1. Producing C from Cx.
-2. Wiring that step into a C build.
-3. Calling between C and Cx.
-4. Debugging and diagnostics.
-5. Current limitations.
-6. Adding the language server.
+This guide covers producing C, wiring it into a build, calling between C and Cx,
+debugging, and editor setup. The language itself is documented in
+[`language.md`](./language.md); implementation details are in
+[`technical.md`](./technical.md).
 
 ---
 
 ## 1. Producing C from Cx
-
-The CLI has these commands:
 
 | Command | Purpose |
 | :--- | :--- |
@@ -31,7 +25,7 @@ The CLI has these commands:
 
 Example:
 
-```
+```sh
 cx build src/counter.cx -o build/counter.c
 ```
 
@@ -39,7 +33,7 @@ cx build src/counter.cx -o build/counter.c
 
 Input `counter.cx`:
 
-```c
+```cxc
 namespace demo {
 
     struct Counter {
@@ -103,10 +97,11 @@ void demo__run(void)
 
 Two transformations matter to callers:
 
-* **Namespaces → name mangling.** The path is joined with `__`
+- **Namespaces → name mangling.** The path is joined with `__`
   (`demo` + `Counter` → `demo__Counter`, `demo` + `run` → `demo__run`). Global
-  scope is left untouched.
-* **RAII → `__attribute__((cleanup))`.** Every local whose type has a
+  scope is left untouched. The full table is in
+  [`language.md`](./language.md) §13.
+- **RAII → `__attribute__((cleanup))`.** Every local whose type has a
   destructor gets the attribute; the destructor runs on every scope exit
   (`return`, `break`, `continue`, `goto`, or falling off the block).
 
@@ -226,17 +221,8 @@ C-facing seam, emit a **declaration-only header** with `cx build foo.hx -o foo.h
 C. A `.cx` can also pull in another module with `import "mod.hx";`, which parses
 the target's declarations and emits `#include "mod.h"`.
 
-Naming conventions to remember when crossing the boundary:
-
-| Cx | C |
-| :--- | :--- |
-| `namespace a::b { void f(); }` | `a__b__f` |
-| `struct Foo` in global scope | `struct Foo` |
-| `struct Foo` in `ns` | `struct ns__Foo` |
-| `~Foo()` in `ns` | `ns__Foo__dtor` (used by `cleanup`) |
-| `Foo()` in `ns` | `ns__Foo__ctor` |
-
-`__` is the reserved separator: do not use `__` in your own Cx identifiers.
+The full name-mangling table is in [`language.md`](./language.md) §13. `__` is
+the reserved separator: do not use `__` in your own Cx identifiers.
 
 ---
 
@@ -244,16 +230,16 @@ Naming conventions to remember when crossing the boundary:
 
 Two things make the generated code feel like first-class source:
 
-* **`#line` directives.** The transpiler injects `#line N "file.cx"` before
+- **`#line` directives.** The transpiler injects `#line N "file.cx"` before
   declarations, so compiler warnings/errors and GDB backtraces point at your
   `.cx` file and line — not the generated `.c`.
-* **Same diagnostics as the editor.** `cx build` and `cx lsp` share one parser,
+- **Same diagnostics as the editor.** `cx build` and `cx lsp` share one parser,
   so what the editor flags is exactly what the build flags:
   `file.cx:11:5: error: syntax error, unexpected IDENT, expecting ';'`.
 
 To inspect a parse or an expansion during integration:
 
-```
+```sh
 cx dump   src/counter.cx
 cx expand src/counter.cx
 ```
@@ -262,41 +248,23 @@ cx expand src/counter.cx
 
 ## 5. Current limitations
 
-Worth knowing before you wire Cx into a large project (roadmap items, not
-architectural blockers):
+Integration-relevant limitations (the full list is in
+[`roadmap.md`](./roadmap.md) and [`required-features.md`](./required-features.md)):
 
-* **Structs require a trailing `;`** (`};`), exactly like C/C++.
-* **Postfix method calls are a first cut.** `x.push(…)` / `p->get(…)` resolve the
-  receiver's type from the enclosing function's parameters and locals (block
-  scoped; `self` inside a constructor/destructor/`implements` body is the
-  enclosing struct) and lower to `Type__push(&x, …)`; an unresolved receiver
-  falls back to `x.push(…)` verbatim. Chained `a.b().c()` and computed receivers
-  are not covered yet, so `Type::func(&x, …)` (lowering to `Type__func`) remains
-  the fully general spelling.
-* **`.` member completion covers methods and fields.** After `recv.`/`recv->` the
-  LSP offers the receiver type's instance methods, the struct's **fields** and its
-  trait vtable pointers (read from the struct's AST). Hover resolves
-  `recv.method`/`recv.field`, and `gd` jumps to the method/field/trait
-  declaration (or the method's macro origin). Same-file `documentHighlight`,
-  `references` and `rename` are **lexical** (a rename rewrites every matching
-  word in the file); cross-file `references` and a binding-aware `rename` are not
-  implemented.
-* **Macros cross `import` boundaries.** An imported `.hx` may export a
-  `macro_rules!` macro: the expander collects definitions from imported files
-  (recursively) before expanding the importer, so a shared container `std` can be
-  built from `.hx` modules. (Hygiene is still not implemented.)
-* **`cleanup` is GCC/Clang only** (no MSVC).
-
-See [`REQUIRED_FEATURES.md`](./REQUIRED_FEATURES.md) for the low-level C gaps and
-[`ROADMAP.md`](./ROADMAP.md) for the ordered backlog.
+- **Structs require a trailing `;`** (`};`), exactly like C/C++.
+- **Postfix method calls are a first cut.** Chained `a.b().c()` and computed
+  receivers are not covered; `Type::func(&x, …)` remains the general spelling.
+- **Macros cross `import` boundaries**, but hygiene is not implemented.
+- **`cleanup` is GCC/Clang only** (no MSVC).
+- **The LSP is same-file for `documentHighlight` / `references` / `rename`**;
+  cross-file references and a binding-aware rename are pending.
 
 ---
 
 ## 6. Adding the language server
 
-The `cx lsp` subcommand runs a JSON-RPC 2.0 server over stdio. It shares the
-exact parser and symbol table as the transpiler, so diagnostics and navigation
-cannot diverge.
+The `cx lsp` subcommand runs a JSON-RPC 2.0 server over stdio. Feature reference:
+[`lsp.md`](./lsp.md).
 
 ### Neovim (0.11+ / this machine's 0.12)
 
@@ -324,22 +292,9 @@ so restart the client — `:LspRestart` — to pick up the new build.
 Cx highlighting is provided by a small Vim syntax file layered on the built-in C
 syntax (comments, strings, numbers, types and C keywords come from C):
 
-* `~/.config/nvim/syntax/cx.vim` — highlights `namespace`, struct
+- `~/.config/nvim/syntax/cx.vim` — highlights `namespace`, struct
   destructors (`~TypeName`), `::`, and the Cx keywords.
-* `~/.config/nvim/ftdetect/cx.vim` — maps `*.cx` and `*.hx` to the `cx`
+- `~/.config/nvim/ftdetect/cx.vim` — maps `*.cx` and `*.hx` to the `cx`
   filetype.
 
 No tree-sitter parser is required.
-
-### What is implemented
-
-| Feature | Status |
-| :--- | :--- |
-| `initialize` / `shutdown` / `exit` | ✅ |
-| `textDocument/publishDiagnostics` | ✅ on `didOpen` / `didChange` / `didClose` |
-| `textDocument/documentSymbol` | ✅ namespaces, structs (+fields), functions, globals |
-| `textDocument/definition` / `declaration` | ✅ symbols, macro origins, `Type::method`, trait methods |
-| `textDocument/hover` | ✅ signatures + doc comments |
-| `textDocument/completion` | ✅ symbols + keywords (+ `Type::` members) |
-
-See `TECHNICAL.md` §3 for the resolution order and caveats.
