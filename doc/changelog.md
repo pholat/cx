@@ -585,3 +585,38 @@ Session log. Append a dated entry per session with the headline changes.
   `auto x = a ? b : c;` works).
 * **Tests.** `tests/golden/do_while.cx`, `tests/golden/ternary.cx`.
 * Docs: `TECHNICAL.md` §4, `ROADMAP.md`, `plan.md`, `REQUIRED_FEATURES.md`.
+
+### Session 2026-11-08 (roadmap tidy + primitive `requires`)
+
+* **Roadmap.** Moved the completed "klib-backed containers" ordered item into
+  the Done list (the container layer is done; the remaining refinements —
+  struct-keyed maps, a capacity policy — stay in the Refinement backlog), so
+  "Write down cx rules" is now the only ordered item. Refreshed the
+  receiver-types/fields prose that had gone stale.
+* **`requires` bounds on primitives.** `check_macro_requires`
+  (`src/sema/symbols.c`) no longer skips a primitive binding: new
+  `is_primitive_type` recognizes a built-in type (`int`, `unsigned int`,
+  `const char`, `float *`, …) and the binding is checked against a fixed set of
+  built-in capability traits (`Hashable`, `Equatable`, `Comparable`, `Ordered`
+  via `primitive_impls_trait`). So `requires $k: Hashable` on `int` passes and
+  `requires $k: Drop` on `int` is a conformance error (both were silently
+  skipped before). Unknown C types still skip.
+* Tests: `tests/golden/primitive_requires.cx` (positive),
+  `tests/golden/primitive_requires_fail.fail.cx` (negative).
+* Docs: `TECHNICAL.md` §4/§6, `ROADMAP.md`.
+
+### Session 2026-11-08 (`RULES.md` — the last ordered item)
+
+* **Doc.** New [`RULES.md`](./RULES.md): a rule-by-rule summary of the language
+  extensions over C, each stated as syntax → lowering, with notes —
+  `namespace`, constructors/destructors + RAII (incl. `#[cleanup]`), associated
+  calls `Type::method(…)`, receiver methods `recv.method(…)`, static traits
+  (`trait`/`implements` + vtable layout), attributes, `import` and the paired
+  `.hx`/`.cx` model, `macro_rules!` (fragments, repetition, `requires`, import
+  collection), `raw { … }` / the `#…` prelude, the `NAME!(…)` C-macro
+  passthrough, `auto`, and `#line` back-mapping — plus a short "not an
+  extension / differences" section. It excludes the klib container layer, as
+  the ordered item required.
+* **Roadmap.** That was the last ordered item, so the `Ordered items` section
+  now reads "all complete"; `RULES.md` is linked from `ROADMAP.md`,
+  `readme.md`, and `TECHNICAL.md`.

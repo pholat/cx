@@ -723,15 +723,63 @@ static int trait_has_method(const CxSymbol *tr, const char *name) {
     return 0;
 }
 
+/* The built-in type keywords. A primitive type's words are all drawn from this
+ * set (`int`, `unsigned int`, `const char`, `float *`, …); `const`/`volatile`
+ * are qualifiers. */
+static int builtin_type_word(const char *w, size_t n) {
+    static const char *const words[] = {"void",     "char",   "short",  "int",
+                                        "long",     "float",  "double", "signed",
+                                        "unsigned", "bool",   "const",
+                                        "volatile", NULL};
+    for (int i = 0; words[i]; i++)
+        if (strlen(words[i]) == n && strncmp(words[i], w, n) == 0) return 1;
+    return 0;
+}
+
+/* True if `type` names a built-in (primitive) Cx type — every word is a built-in
+ * type keyword and at least one is present. Used so a `requires` bound on a
+ * primitive is checked against the built-in capability traits rather than
+ * skipped. */
+static int is_primitive_type(const char *type) {
+    if (!type || !*type) return 0;
+    int any = 0;
+    const char *p = type;
+    while (*p) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p || *p == '[') break;
+        if (*p == '*' || *p == '&') {
+            p++;
+            continue;
+        }
+        const char *s = p;
+        while (*p && *p != ' ' && *p != '\t' && *p != '*' && *p != '&' &&
+               *p != '[')
+            p++;
+        if (!builtin_type_word(s, (size_t)(p - s))) return 0;
+        any = 1;
+    }
+    return any;
+}
+
+/* The capability traits every primitive type implements. A fixed set; the names
+ * match the `requires` examples in the docs. */
+static int primitive_impls_trait(const char *trait) {
+    return trait && (!strcmp(trait, "Hashable") || !strcmp(trait, "Equatable") ||
+                     !strcmp(trait, "Comparable") || !strcmp(trait, "Ordered"));
+}
+
 /* Checked `requires`: for every requirement recorded at a `macro_rules!`
  * invocation, verify conformance.
  *
  * * A concrete type that resolves to a *struct* must have a matching
- *   `implements` block (a built-in/unknown type cannot implement a trait in the
- *   current model, so it is skipped).
+ *   `implements` block.
+ * * A *primitive* type implements a fixed set of built-in capability traits
+ *   (`Hashable`, `Equatable`, `Comparable`, `Ordered`) — so `requires $k:
+ *   Hashable` on `int` passes and `requires $k: Drop` on `int` fails.
  * * An `ident`/`path` metavariable that names no struct is a *function* binding:
  *   it must name one of the trait's required methods (e.g. `requires $a: A` for
  *   the function `a` passed as A's method).
+ * * Anything else (a C type Cx does not know) is not checkable and is skipped.
  *
  * The required trait itself is always checked for existence. */
 static void check_macro_requires(BuildCtx *c, CxNode *tu) {
@@ -767,6 +815,15 @@ static void check_macro_requires(BuildCtx *c, CxNode *tu) {
                 cx_error(c->diags, r->span,
                          "'%s' does not name a method of trait '%s'", r->type,
                          r->trait);
+            continue;
+        }
+        /* A primitive type implements the built-in capability traits; anything
+         * else (a C type Cx does not know) is not checkable (skip). */
+        if (is_primitive_type(r->type)) {
+            if (!primitive_impls_trait(r->trait))
+                cx_error(c->diags, r->span,
+                         "primitive type '%s' does not implement trait '%s'",
+                         r->type, r->trait);
             continue;
         }
         /* otherwise: not checkable in this cut (skip) */

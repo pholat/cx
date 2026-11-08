@@ -4,7 +4,8 @@
 > the design direction change. `TECHNICAL.md` §8 is just a pointer here.
 >
 > Related: [`TECHNICAL.md`](./TECHNICAL.md) (implemented language/codegen/sema
-> details), [`GENERICS.md`](./GENERICS.md) (traits/attributes/generics design),
+> details), [`RULES.md`](./RULES.md) (rule-by-rule language extensions),
+> [`GENERICS.md`](./GENERICS.md) (traits/attributes/generics design),
 > [`MACRO_RULES.md`](./MACRO_RULES.md) (`macro_rules!` design),
 > [`REQUIRED_FEATURES.md`](./REQUIRED_FEATURES.md) (C/klib gaps),
 > [`changelog.md`](./changelog.md) (history).
@@ -14,8 +15,9 @@
 Done: **C interop** (`raw { … }` + `#include` + `NAME!(…)` macro invocation
 passthrough), **static traits** (`trait`/`implements`), **attributes** (`#[…]`),
 **`macro_rules!`** (item + expression-position expansion, see `TECHNICAL.md` §4),
-**checked trait requirements in macros** (`requires`, plus the `$x:method`
-`Trait::member` fragment), the **paired `.hx`/`.cx` model** (`.c` includes the
+**checked trait requirements in macros** (`requires`, for structs **and
+primitives**, plus the `$x:method` `Trait::member` fragment), the **paired
+`.hx`/`.cx` model** (`.c` includes the
 matching header and emits definitions only), **`auto` return types**,
 **`.`/`->` method calls** (receiver-type tracking), **container variants +
 teardown** (list/vec/bag + int/string maps + set, with `drop` on teardown),
@@ -23,44 +25,14 @@ teardown** (list/vec/bag + int/string maps + set, with `drop` on teardown),
 **conditional `?:` and `do…while`**, and the **LSP navigation/hover/completion**
 work for those (macro origins,
 `Type::method`, `Trait::method` + docs, receiver-type completion / hover / `gd` /
-signature help, and same-file `documentHighlight` / `references` / `rename`). See
-the Done list below.
+signature help, and same-file `documentHighlight` / `references` / `rename`).
+The language rules are written up in [`RULES.md`](./RULES.md). See the Done list
+below.
 
 ## Ordered items
 
-1. **klib-backed containers** — `List<T>` / `Map<K,V>` on klib, via macros or
-   (later) templates.
-   * **Done:** klist-backed `IntList` (`klib_list.cx`, `example.cx`);
-     khash-backed `IntMap` (`klib_map.cx`), string-keyed `StrMap`
-     (`klib_strmap.cx`), `IntSet` (`klib_set.cx`) and value-dropping `BoxMap`
-     (`klib_map_drop.cx`); and element-typed `BoxBag`/`BoxVec` (`klib_bag.cx`,
-     `method_with_macro.cx`). Each C macro is a `NAME!(…)` passthrough plus a
-     per-instantiation C helper (`CX_KHASH_*_HELPERS`) for typed accessors over
-     the `void *` handle, so Cx never spells `khash_t(<Name>)`. All use the
-     **associated call** syntax and the `.`-method form, and `tests/run.sh` adds
-     `submodules/klib` to the include path. Jump-to-definition / hover for the
-     container methods works (macro origins + `Trait::method`).
-   * **Teardown:** the element free/RAII policy is implemented — the bag's and
-     the map's `free` walk their elements and invoke `drop` through the installed
-     vtable (`klib_bag.cx`, `method_with_macro.cx`, `klib_map_drop.cx`).
-   * **Modules:** the container macros live in reusable `std_*.hx` macro modules —
-     `std_list.hx` (`define_list!`), `std_map.hx` / `std_strmap.hx`
-     (`define_int_map!` / `define_str_map!`), `std_set.hx` / `std_strset.hx`
-     (`define_int_set!` / `define_str_set!`) and `std_vec.hx` (`define_vec!`,
-     element-typed, `requires $t: Drop`, with `drop` on teardown), with
-     `std_drop.hx` exporting the interface. Each carries its own C context
-     (`#include`s and helpers) in the generated header, so the importer needs
-     nothing extra. New examples: `std_demo.cx`, `std_owned_demo.cx`,
-     `std_str_demo.cx`.
-   * **Still needed:** `requires` bounds for primitive key/value capabilities,
-     struct-keyed maps (which need a user hash/equal pair), and a real
-     capacity/growth policy.
-   * **Method spelling:** both the associated `IntList::push(&l, 10)` form and
-     the `.`-method `l.push(10)` form now work (receiver types landed — see
-     Done).
-2. Write down cx rules, but only the ones that extend the 'c' feature after feature.
-   Excluding the klib integration - as it's not meant to be final part of extension,
-   but an intermediate one - or a building block.
+All ordered items are complete — see the Done list below; the **Refinement**
+backlog holds what can be added next.
 
 ## Done
 
@@ -171,6 +143,28 @@ the Done list below.
   right-associative, binding tighter than `=` and looser than `||`), with the
   `do` keyword and the `?` token in the lexer; `infer_type` resolves a ternary
   through its operands. Tests: `tests/golden/do_while.cx`, `ternary.cx`.
+* **`requires` bounds on primitives.** `check_macro_requires` no longer skips a
+  primitive binding: `is_primitive_type` recognizes a built-in type (`int`,
+  `unsigned int`, `const char`, `float *`, …) and the binding is checked against
+  a fixed set of built-in capability traits (`Hashable`, `Equatable`,
+  `Comparable`, `Ordered`) — so `requires $k: Hashable` on `int` passes and
+  `requires $k: Drop` on `int` is a conformance error. Tests:
+  `tests/golden/primitive_requires.cx`, `primitive_requires_fail.fail.cx`.
+* **klib-backed containers (roadmap ordered item 1) — complete.** The container
+  layer over klib covers klist-backed lists/vectors and khash-backed maps/sets
+  (int/string keys, `Set`, value-dropping map), an element free/RAII policy
+  (`free` drops each element through the vtable), reusable `std_*.hx` macro
+  modules that carry their own C context, checked `requires` bounds (structs and
+  primitives), and both the associated `Type::method(…)` and `.`-method
+  `l.push(…)` spellings. See the per-file container bullets above; the remaining
+  refinements live under "Containers / stdlib".
+* **Cx rules written down (roadmap ordered item 2).** New
+  [`RULES.md`](./RULES.md) — a rule-by-rule summary of the language extensions
+  over C (namespace, ctors/dtors + RAII, associated calls, receiver methods,
+  traits, attributes, `import`/pairing, `macro_rules!`, `raw`/prelude,
+  `NAME!(…)` passthrough, `auto`, `#line`), each with what it lowers to. It
+  excludes the klib container layer, as the item specified. That closes the
+  ordered-items list.
 
 ## Refinement (what can be added next)
 
@@ -178,18 +172,20 @@ Themes are roughly prioritised; see "Suggested order" at the end.
 
 ### Receiver types → `.`-method calls
 
-Landed: the transpiler lowering (see Done) *and* the LSP tooling
-(dot-completion, hover, `gd`, signature help). What remains is a proper
-block-scoped environment (shadowing, `self` inside `implements`, chained
-`a.b().c()`) and struct *field* completion after `.`. `src/sema/scope.c` is still
-the scaffold; the current environment lives in `resolve_receivers`
+Landed: the transpiler lowering (a **block-scoped** environment, and `self`
+bound in constructor/destructor/`implements` bodies) *and* the LSP tooling
+(dot-completion for methods **and** fields, hover, `gd`, signature help). What
+remains is chained `a.b().c()` and computed receivers. `src/sema/scope.c` is
+still the scaffold; the current environment lives in `resolve_receivers`
 (`src/sema/symbols.c`).
 
 ### Containers / stdlib
 
 * **`Set<T>` / `Map` variants** — string keys and `Set` landed
-  (`klib_strmap.cx`, `klib_set.cx`); remaining are struct keys (a user
-  hash/equal pair) and a real capacity/growth policy.
+  (`klib_strmap.cx`, `klib_set.cx`); remaining are struct keys (which need a
+  user hash/equal pair) and a real capacity/growth policy. `requires` bounds on
+  primitives are now checked against the built-in capability traits
+  (`Hashable`, `Equatable`, `Comparable`, `Ordered`) — see Done.
 * **Infer the trait from the object** — once receiver types exist, generate
   `($x).<Trait>::<member>` from a `requires $x: A + B` clause so the call site
   can be `both_total!($x)` again, with `A::a` reserved for the ambiguous cases.
@@ -219,8 +215,6 @@ the scaffold; the current environment lives in `resolve_receivers`
   emitter would carry them.
 * **Supertraits and default method bodies**
   (`trait X: A + B { int f(self) { … } }`).
-* **Built-in impls for primitives** so `requires $k: Hashable` on `int` isn't
-  skipped.
 * **Postfix vtable calls** (`x.T->m(a)` / `x.m(a)`) — removes the
   function-pointer-local boilerplate (`TECHNICAL.md` §4).
 * **Derived/blanket implementations** (e.g. auto-`Equatable` for POD structs).

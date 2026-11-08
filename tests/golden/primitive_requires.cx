@@ -1,0 +1,26 @@
+// Positive test: a primitive type satisfies the built-in capability traits
+// (`Hashable`, `Equatable`, `Comparable`, `Ordered`), so a `requires $k:
+// Hashable` bound on `int` (or `unsigned int`, …) passes — instead of being
+// silently skipped.
+
+trait Hashable {
+    int hash(self);
+}
+
+macro_rules! hashed {
+    ($name:ident, $k:ty) requires $k: Hashable => {
+        int $name($k x) {
+            return (int) x;
+        }
+    };
+}
+
+namespace demo {
+
+    hashed!(hash_int, int);
+    hashed!(hash_uint, unsigned int);
+
+    int run() {
+        return hash_int(3) + hash_uint(4);
+    }
+}

@@ -48,6 +48,7 @@ All documentation lives in [`doc/`](./doc).
 | Doc | Contents |
 | :-- | :-- |
 | [`doc/TECHNICAL.md`](./doc/TECHNICAL.md) | **Start here.** Living map of the codebase: language surface, codegen, semantics, gotchas. |
+| [`doc/RULES.md`](./doc/RULES.md) | Rule-by-rule summary of the language extensions over C. |
 | [`doc/ROADMAP.md`](./doc/ROADMAP.md) | Priorities, ordering rationale, and the **Refinement** backlog. |
 | [`doc/changelog.md`](./doc/changelog.md) | Session log / history. |
 | [`doc/GENERICS.md`](./doc/GENERICS.md) | Traits, attributes, generics design. |

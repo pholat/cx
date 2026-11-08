@@ -9,6 +9,7 @@ Related docs (all under `doc/` except the root entry point):
 approach decision), [`plan.md`](./plan.md) (design & architecture),
 [`integration.md`](./integration.md) (using Cx from a C build + editor setup),
 [`ROADMAP.md`](./ROADMAP.md) (priorities + refinement backlog),
+[`RULES.md`](./RULES.md) (rule-by-rule language extensions),
 [`changelog.md`](./changelog.md) (session log),
 [`REQUIRED_FEATURES.md`](./REQUIRED_FEATURES.md) (what Cx still lacks for
 low-level C).
@@ -337,11 +338,13 @@ make_vec!(IntVec, int);          /* -> struct IntVec { … }; int IntVec_first( 
   `requires $k: Hashable + Equatable, $v: Clone`. The clause is parsed and
   recorded on the rule, and **checked** after the AST is built: for every
   invocation the expander records the concrete binding and its fragment kind,
-  and sema verifies it (see §6). A **type** binding must implement the trait
-  (`implements`); an **`ident`/`path`** binding that names no struct must be one
-  of the trait's required methods (`requires $a: A` for the function `a` passed
-  as A's method). Trait members are reachable in a transcription through the
-  field named after the trait (`($x).Iterable->len`, …).
+  and sema verifies it (see §6). A **type** binding that resolves to a struct
+  must have an `implements` block; a **primitive** type (e.g. `int`) satisfies the
+  built-in capability traits (`Hashable`, `Equatable`, `Comparable`, `Ordered`)
+  and is an error otherwise; an **`ident`/`path`** binding that names no struct
+  must be one of the trait's required methods (`requires $a: A` for the function
+  `a` passed as A's method). Trait members are reachable in a transcription
+  through the field named after the trait (`($x).Iterable->len`, …).
 * **`Trait::member` references** (`$x:method`): the metavariable matches a
   qualified method reference such as `A::a`. It is **checked** (the member must
   be a required method of the trait) and, in a transcription, expands to the
@@ -475,13 +478,20 @@ Details:
   binding the macro expander recorded on the TU (`CxMacroMap`), the required
   trait must exist, and then:
   * a binding that resolves to a **struct** must have a matching `implements`
-    block; a built-in/unknown type is skipped (it cannot implement a trait in the
-    current model);
+    block;
+  * a **primitive** binding (`int`, `unsigned int`, `const char`, `float *`, … —
+    `is_primitive_type`) is checked against a fixed set of built-in capability
+    traits (`Hashable`, `Equatable`, `Comparable`, `Ordered`), so
+    `requires $k: Hashable` on `int` passes and `requires $k: Drop` on `int`
+    fails;
   * an **`ident`/`path`** binding that names no struct is a function binding and
     must name one of the trait's required methods
-    (`'z' does not name a method of trait 'A'`).
+    (`'z' does not name a method of trait 'A'`);
+  * anything else (a C type Cx does not know) is not checkable and is skipped.
   Negative tests: `tests/golden/macro_requires_fail.fail.cx` (struct),
-  `tests/golden/macro_requires_method_fail.fail.cx` (method).
+  `tests/golden/macro_requires_method_fail.fail.cx` (method),
+  `tests/golden/primitive_requires_fail.fail.cx` (primitive); positive:
+  `tests/golden/primitive_requires.cx`.
 
 The LSP diagnostics path runs `cx_parse` **and** `cx_sema_build`, so editor
 diagnostics match the transpiler. `CxSpan` is 1-based inclusive; the LSP

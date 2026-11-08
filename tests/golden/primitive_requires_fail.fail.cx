@@ -1,0 +1,21 @@
+// Negative test for checked `requires` on a primitive. A primitive type
+// implements only the built-in capability traits (`Hashable`, `Equatable`,
+// `Comparable`, `Ordered`), so `requires $k: Drop` on `int` is a conformance
+// error (run.sh treats `*.fail.cx` as expected-to-fail).
+
+trait Drop {
+    void drop(self);
+}
+
+macro_rules! dropped {
+    ($name:ident, $k:ty) requires $k: Drop => {
+        int $name($k x) {
+            return 1;
+        }
+    };
+}
+
+namespace demo {
+
+    dropped!(drop_int, int);
+}
