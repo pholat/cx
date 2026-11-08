@@ -39,6 +39,13 @@ below.
      the Refinement backlog.
 2. A paired `.hx`/`.cx` model (the `.c` includes its header and skips duplicate
    declarations).
+3. 'auto' keyword where easilly possible. This would be:
+    1. on function return - as function specifies it's return type
+    2. on element creation - as the right side of creation of element specifies
+       the return type.
+4. Write down cx rules, but only the ones that extend the 'c' feature after feature.
+   Excluding the klib integration - as it's not meant to be final part of extension,
+   but an intermediate one - or a building block.
 
 ## Done
 
@@ -208,6 +215,10 @@ confined to the `raw { … }` / invocation-passthrough escape hatch.
   values, e.g. `(a, b) = f();` or `a, b := f();`. No grammar chosen yet; a
   natural lowering is a struct return plus per-field unpacking (leaning on the
   existing struct-by-value return support).
+  For the struct, it could be nice to be able to write i.e. `a,b := struc_sub[field-name, field-name]`
+  but this collides with standard `[]` unpacking so it's less than ideal
+  maybe some other syntax like `a,b := struc_sub=>[field-name, field-name]`
+  where `=>` would mean 'reach' or something similar would be nice
 * **Scoped imports** — an `import` that introduces names only for a scope
   (block / function / namespace) instead of file-wide, so imported symbols do
   not pollute the whole translation unit. Would likely interact with the lexer
@@ -216,3 +227,37 @@ confined to the `raw { … }` / invocation-passthrough escape hatch.
   (include paths, flags, one entry per generated file) alongside the generated C,
   so clangd and other C tooling resolve the transpiled output; could also help
   the Cx LSP discover module roots and import paths.
+* Static map - constatnt size map up to n elements that uses whole space required
+  but is always use'able via index. With/without builtin len check - optional
+  depending on use required.
+  Static mapping should be usefull especially for typical switch-case scenarios
+  which build table execution.
+* avl or rb based map for anything that provides interface
+* `#[cast]` as macro, or as new execution `cast[type]` - syntax sugar for c-cast 
+  because standard c-cast is not very readable. Consider optional 2 parameter
+  with compile time-check.
+* fsm syntax that can be used with cx and creates a sm with basic uml syntax
+  `StateA -> StateB : Event [Guard] / Action`
+  which would generate:
+  1. enum with states
+  2. enum with events
+  3. sm struct with
+      1. guard function pointers to fill
+      2. acton function pointers to fill
+      3. context pointer to fill
+  4. the sm struct will provide:
+     1. process_event
+     2. reset
+     3. get_state
+ * `#[str]` syntax that will automatically create a c_str function for enum
+   that will return a static set of strings in switch case for each enum element
+   ```
+   const char* c_str(enum val)
+   {
+      switch(val):
+         case enum_name_1:
+            return "enum_name_1"
+      ...
+      return "";
+   }
+   ```

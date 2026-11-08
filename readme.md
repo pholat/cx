@@ -17,16 +17,16 @@ the transpiler uses.
  │  Lexer  │───▶│  Parser  │───▶│  AST   │───▶│  Sema   │
  │ (Flex)  │    │ (Bison)  │    │ shared │    │ symbols │
  └─────────┘    └──────────┘    └────────┘    │ + RAII  │
-                                             └────┬────┘
-                                   ┌──────────────┴──────────────┐
-                                   ▼                             ▼
-                             ┌───────────┐                 ┌───────────┐
-                             │  Codegen  │                 │ LSP server│
-                             │ generic C │                 │ (cx lsp)  │
-                             └─────┬─────┘                 └─────┬─────┘
-                                   ▼                             ▼
-                            build/*.c, build/*.h        diagnostics, gd,
-                            (+ #line back to .cx)       hover, completion
+                                              └────┬────┘
+                                    ┌──────────────┴──────────────┐
+                                    ▼                             ▼
+                              ┌───────────┐                 ┌───────────┐
+                              │  Codegen  │                 │ LSP server│
+                              │ generic C │                 │ (cx lsp)  │
+                              └─────┬─────┘                 └─────┬─────┘
+                                    ▼                             ▼
+                             build/*.c, build/*.h        diagnostics, gd,
+                             (+ #line back to .cx)       hover, completion
 ```
 
 The **AST + semantic layer is the contract**: the C backend and the language
