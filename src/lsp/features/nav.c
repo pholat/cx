@@ -363,6 +363,82 @@ static const char *line_start_at(const char *text, int line) {
     return p;
 }
 
+/* Find the call node named `name` (recursively). */
+static CxNode *nav_find_call(CxNode *n, const char *name) {
+    if (!n) return NULL;
+    if (n->kind == CX_NODE_EXPR_CALL && n->name && !strcmp(n->name, name))
+        return n;
+    CxNode *kids[8] = {n->lhs, n->rhs,  n->init, n->body,
+                       n->cond, n->then, n->els, n->incr};
+    for (int i = 0; i < 8; i++) {
+        CxNode *r = nav_find_call(kids[i], name);
+        if (r) return r;
+    }
+    for (int i = 0; i < n->children.len; i++) {
+        CxNode *r = nav_find_call(n->children.items[i], name);
+        if (r) return r;
+    }
+    for (int i = 0; i < n->params.len; i++) {
+        CxNode *r = nav_find_call(n->params.items[i], name);
+        if (r) return r;
+    }
+    return NULL;
+}
+
+/* See nav.h. Types a computed receiver by parsing `recv.__cx_comp();`. */
+const char *cx_lsp_computed_receiver_base(CxArena *arena, const char *text,
+                                          const char *uri, int line, int column,
+                                          int prefix_len, char *buf, size_t n) {
+    if (!arena || !text || !buf || n == 0) return NULL;
+    buf[0] = '\0';
+    if (line < 1 || column < 1) return NULL;
+
+    const char *ls = line_start_at(text, line);
+    const char *le = ls;
+    while (*le && *le != '\n') le++;
+    const char *at = ls + (column - 1);
+    if (at < ls) at = ls;
+    if (at > le) at = le;
+    const char *ps = at - prefix_len; /* start of the typed member prefix */
+    if (ps < ls) ps = ls;
+
+    /* Only when the member follows a `.` or `->`. */
+    const char *sep = ps;
+    while (sep > ls && (sep[-1] == ' ' || sep[-1] == '\t')) sep--;
+    int dot = (sep - ls >= 1 && sep[-1] == '.');
+    int arrow = (sep - ls >= 2 && sep[-1] == '>' && sep[-2] == '-');
+    if (!dot && !arrow) return NULL;
+
+    static const char marker[] = "__cx_comp();";
+    size_t pre = (size_t)(ps - text);
+    size_t mid = sizeof marker - 1;
+    size_t post = strlen(le);
+    char *fixed = (char *)malloc(pre + mid + post + 1);
+    if (!fixed) return NULL;
+    memcpy(fixed, text, pre);
+    memcpy(fixed + pre, marker, mid);
+    memcpy(fixed + pre + mid, le, post + 1);
+
+    CxDiagList diags;
+    cx_diaglist_init(&diags, uri ? uri : "<input>");
+    CxNode *tu = cx_parse(arena, fixed, strlen(fixed), uri, &diags);
+    CxSymbolTable *sema = tu ? cx_sema_build(arena, tu, &diags) : NULL;
+    const char *res = NULL;
+    if (sema) {
+        CxNode *call = nav_find_call(tu, "__cx_comp");
+        if (call && call->lhs) {
+            const char *t = cx_sema_expr_type(arena, sema, call->lhs);
+            if (t) {
+                cx_lsp_base_type(t, buf, n);
+                res = buf;
+            }
+        }
+    }
+    cx_diaglist_free(&diags);
+    free(fixed);
+    return res;
+}
+
 static int is_comment_line(const char *ls) {
     while (*ls == ' ' || *ls == '\t') ls++;
     return ls[0] == '/' && ls[1] == '/';

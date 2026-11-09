@@ -1,0 +1,20 @@
+// Chained receiver calls: `out.get().value()` resolves the inner method's
+// return type (`Outer__get` -> `Inner *`) and lowers the outer call to
+// `Inner__value(Outer__get(&out))`.
+struct Inner {
+    int v;
+};
+
+struct Outer {
+    Inner in;
+};
+
+Inner *Outer__get(Outer *o) { return &(o->in); }
+
+int Inner__value(Inner *i) { return i->v; }
+
+int run() {
+    Outer out;
+    out.in.v = 7;
+    return out.get().value();
+}

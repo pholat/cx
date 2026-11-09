@@ -45,6 +45,15 @@ const char *cx_lsp_receiver_base(CxArena *arena, CxNode *tu,
                                  const char *uri, int line, int column,
                                  const char *name, char *buf, size_t n);
 
+/* Like `cx_lsp_receiver_base`, but for a *computed* receiver: when the 1-based
+ * (line, column) sits just after a `.`/`->` whose receiver is an expression
+ * (`a.b().`, `f(x).`), resolve its base type by reparsing with a marker method
+ * call (`__cx_comp()`). `prefix_len` is the length of the already-typed member
+ * prefix after the dot. Copies the base type into `buf`; NULL if not applicable. */
+const char *cx_lsp_computed_receiver_base(CxArena *arena, const char *text,
+                                          const char *uri, int line, int column,
+                                          int prefix_len, char *buf, size_t n);
+
 /* If the 1-based (line, column) is inside a call's argument list, find the `(`
  * that opens it and the 0-based argument index at the cursor (top-level commas
  * between the `(` and the cursor). Returns 1 (writing the 1-based positions of

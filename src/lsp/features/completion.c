@@ -37,7 +37,7 @@ static void add_item(CxBuf *out, int *count, const char *label, int kind,
 /* A macro-generated `A__B` name is shown as the source spelling `A::B`. */
 static const char *macro_display(CxMacroMap *map, const char *name, char *buf,
                                  size_t n) {
-    if (map && name && cx_macro_map_find(map, name)) {
+    if (map && name && cx_macro_map_find(map, name, NULL)) {
         char *dd = strstr(name, "__");
         if (dd) {
             snprintf(buf, n, "%.*s::%s", (int)(dd - name), name, dd + 2);
@@ -80,6 +80,13 @@ int cx_lsp_completion(CxBuf *out, const char *uri, const char *text, size_t len,
         recv_type = cx_lsp_receiver_base(arena, tu, sema, text, uri, line + 1,
                                          character + 1, recv, recv_base,
                                          sizeof recv_base);
+    else if (sema)
+        /* A computed receiver: `a.b().` / `f(x).` — type it by reparsing with
+         * a marker method call. Returns NULL when the cursor is not after a
+         * `.`/`->`. */
+        recv_type = cx_lsp_computed_receiver_base(
+            arena, text, uri, line + 1, character + 1, (int)plen, recv_base,
+            sizeof recv_base);
     /* `recv.` -> a struct (fields + methods); `recv.` where `recv` names a trait
      * is the `x.Trait->method` step, so offer the trait's methods. */
     CxSymbol *recv_struct = (recv_type && sema)
@@ -109,8 +116,10 @@ int cx_lsp_completion(CxBuf *out, const char *uri, const char *text, size_t len,
         /* Offer the receiver type's members as bare names (inserted after the
          * `.`/`->`): associated functions named `Type__member`, plus the
          * struct's own fields and its trait vtable pointers. For a trait
-         * receiver (`x.Trait->`), offer the trait's methods. */
-        size_t mlen = strlen(dmem);
+         * receiver (`x.Trait->`), offer the trait's methods. For a computed
+         * receiver the typed member prefix comes from `prefix`. */
+        const char *mfilter = dotted ? dmem : prefix;
+        size_t mlen = strlen(mfilter);
         if (recv_type) {
             size_t blen = strlen(recv_type);
             for (int i = 0; i < sema->len; i++) {
@@ -129,7 +138,7 @@ int cx_lsp_completion(CxBuf *out, const char *uri, const char *text, size_t len,
                 char pb[128];
                 cx_lsp_base_type(s->decl->params.items[0]->type, pb, sizeof pb);
                 if (strcmp(pb, recv_type) != 0) continue;
-                if (mlen && strncmp(m, dmem, mlen) != 0) continue;
+                if (mlen && strncmp(m, mfilter, mlen) != 0) continue;
                 add_item2(out, &count, m, 2 /* Method */, s->type, m);
             }
         }
@@ -141,12 +150,12 @@ int cx_lsp_completion(CxBuf *out, const char *uri, const char *text, size_t len,
                 for (int k = 0; k < m->children.len; k++) {
                     CxNode *d = m->children.items[k];
                     if (!d->name) continue;
-                    if (mlen && strncmp(d->name, dmem, mlen) != 0) continue;
+                    if (mlen && strncmp(d->name, mfilter, mlen) != 0) continue;
                     add_item2(out, &count, d->name, 5 /* Field */, m->type,
                               d->name);
                 }
             } else if (m->kind == CX_NODE_IMPLEMENTS && m->name) {
-                if (mlen && strncmp(m->name, dmem, mlen) != 0) continue;
+                if (mlen && strncmp(m->name, mfilter, mlen) != 0) continue;
                 add_item2(out, &count, m->name, 5 /* Field */, "trait vtable",
                           m->name);
             }

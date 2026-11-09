@@ -718,6 +718,7 @@ typedef struct {
     int        nrules;
     int        cap;
     CxSpan     span;
+    const char *file; /* file the `macro_rules!` definition lives in */
 } Macro;
 
 typedef struct {
@@ -770,6 +771,8 @@ typedef struct {
     char     *name;
     MToken ***caps; /* one token list per repetition iteration */
     int      *lens;
+    int     **paths;  /* repetition index path per capture (nested repetitions) */
+    int      *depths; /* length of each capture's path */
     int       ncaps;
     int       cap;
 } MBind;
@@ -778,7 +781,24 @@ typedef struct {
     MBind *items;
     int    len;
     int    cap;
+    int   *path;    /* current repetition index path (nested repetitions) */
+    int    npath;
+    int    pathcap;
 } MEnv;
+
+/* Push an iteration index onto a (matching) environment's current path. */
+static void env_push_path(CxArena *a, MEnv *e, int idx) {
+    if (e->npath == e->pathcap) {
+        int cap = e->pathcap ? e->pathcap * 2 : 8;
+        int *items = (int *)cx_arena_alloc(a, sizeof(int) * (size_t)cap);
+        if (!items) return;
+        if (e->path && e->npath)
+            memcpy(items, e->path, sizeof(int) * (size_t)e->npath);
+        e->path = items;
+        e->pathcap = cap;
+    }
+    e->path[e->npath++] = idx;
+}
 
 static MBind *env_get(MEnv *e, const char *name) {
     for (int i = 0; i < e->len; i++)
@@ -805,23 +825,39 @@ static MBind *env_get_or_add(CxArena *a, MEnv *e, const char *name) {
     return b;
 }
 
-static void bind_add(CxArena *a, MBind *b, MToken **tokens, int n) {
+static void bind_add(CxArena *a, MBind *b, MToken **tokens, int n,
+                     const int *path, int npath) {
     if (b->ncaps == b->cap) {
         int cap = b->cap ? b->cap * 2 : 4;
         MToken ***caps =
             (MToken ***)cx_arena_alloc(a, sizeof(MToken **) * (size_t)cap);
         int *lens = (int *)cx_arena_alloc(a, sizeof(int) * (size_t)cap);
-        if (!caps || !lens) return;
+        int **paths = (int **)cx_arena_alloc(a, sizeof(int *) * (size_t)cap);
+        int *depths = (int *)cx_arena_alloc(a, sizeof(int) * (size_t)cap);
+        if (!caps || !lens || !paths || !depths) return;
         if (b->caps && b->ncaps)
             memcpy(caps, b->caps, sizeof(MToken **) * (size_t)b->ncaps);
         if (b->lens && b->ncaps)
             memcpy(lens, b->lens, sizeof(int) * (size_t)b->ncaps);
+        if (b->paths && b->ncaps)
+            memcpy(paths, b->paths, sizeof(int *) * (size_t)b->ncaps);
+        if (b->depths && b->ncaps)
+            memcpy(depths, b->depths, sizeof(int) * (size_t)b->ncaps);
         b->caps = caps;
         b->lens = lens;
+        b->paths = paths;
+        b->depths = depths;
         b->cap = cap;
+    }
+    int *p = NULL;
+    if (npath > 0) {
+        p = (int *)cx_arena_alloc(a, sizeof(int) * (size_t)npath);
+        if (p) memcpy(p, path, sizeof(int) * (size_t)npath);
     }
     b->caps[b->ncaps] = tokens;
     b->lens[b->ncaps] = n;
+    b->paths[b->ncaps] = p;
+    b->depths[b->ncaps] = npath;
     b->ncaps++;
 }
 
@@ -839,7 +875,8 @@ static void env_merge(CxArena *a, MEnv *dst, MEnv *src) {
         MBind *b = &src->items[i];
         for (int k = 0; k < b->ncaps; k++) {
             MBind *d = env_get_or_add(a, dst, b->name);
-            if (d) bind_add(a, d, b->caps[k], b->lens[k]);
+            if (d) bind_add(a, d, b->caps[k], b->lens[k], b->paths[k],
+                            b->depths[k]);
         }
     }
 }
@@ -857,6 +894,29 @@ static int frag_consume(MToken **in, int nin, int pos, const char *frag,
     }
     if (!strcmp(frag, "tt")) {
         if (pos < nin) {
+            *count = 1;
+            return 1;
+        }
+        return 0;
+    }
+    /* `$x:item` matches a whole item: a balanced group (plus an optional `;`)
+     * or a run of tokens terminated by a top-level `;`. */
+    if (!strcmp(frag, "item")) {
+        int p = pos;
+        if (p < nin && in[p]->kind == MT_GROUP && in[p]->open == '{') {
+            p++;
+            if (p < nin && tok_is_punct(in[p], ";")) p++;
+        } else {
+            while (p < nin && !tok_is_punct(in[p], ";")) p++;
+            if (p < nin && tok_is_punct(in[p], ";")) p++;
+        }
+        if (p == pos) return 0;
+        *count = p - pos;
+        return 1;
+    }
+    /* `$x:block` matches a single balanced `{ … }` group. */
+    if (!strcmp(frag, "block")) {
+        if (pos < nin && in[pos]->kind == MT_GROUP && in[pos]->open == '{') {
             *count = 1;
             return 1;
         }
@@ -937,6 +997,11 @@ static int match_rep(CxArena *a, CxDiagList *diags, MPat *p, MToken **in,
     for (;;) {
         int iter_start = *pos;
         MEnv iter = {0};
+        /* Each iteration runs with the outer path extended by its index, so a
+         * metavariable captured by a nested repetition records the index path
+         * that reaches it. */
+        for (int i = 0; i < env->npath; i++) env_push_path(a, &iter, env->path[i]);
+        env_push_path(a, &iter, count);
         if (!match_seq(a, diags, p->kids, p->nkids, in, nin, pos, &iter)) {
             *pos = iter_start;
             if (sep_at >= 0) {
@@ -990,7 +1055,7 @@ static int match_seq(CxArena *a, CxDiagList *diags, MPat **pats, int np,
             if (!frag_consume(in, nin, *pos, p->frag, &count)) return 0;
             MToken **cap = cap_range(a, in, *pos, count);
             MBind *b = env_get_or_add(a, env, p->text);
-            if (b) bind_add(a, b, cap, count);
+            if (b) bind_add(a, b, cap, count, env->path, env->npath);
             *pos += count;
             break;
         }
@@ -1057,29 +1122,37 @@ static void emit_tokens(Out *o, MToken **toks, int n) {
     }
 }
 
-static int trans_count(MTrans **kids, int n, MEnv *env);
-
-static int trans_kids_count(MTrans **kids, int nk, MEnv *env) {
-    for (int i = 0; i < nk; i++) {
+/* Number of iterations a repetition at `kids` runs for the current transcription
+ * path (the index path `path[0..npath)`). Counts the distinct values the first
+ * metavariable found inside the repetition records at index `npath`; supports
+ * nested repetitions. Returns -1 when no metavariable is found. */
+static int trans_count(MTrans **kids, int n, MEnv *env, const int *path,
+                       int npath) {
+    for (int i = 0; i < n; i++) {
         MTrans *t = kids[i];
         if (t->kind == T_VAR) {
             MBind *b = env_get(env, t->text);
-            if (b) return b->ncaps;
+            if (!b) continue;
+            int mx = -1;
+            for (int k = 0; k < b->ncaps; k++) {
+                if (b->depths[k] <= npath) continue;
+                if (npath > 0 && b->paths[k] &&
+                    memcmp(b->paths[k], path, sizeof(int) * (size_t)npath) != 0)
+                    continue;
+                int idx = b->paths[k][npath];
+                if (idx > mx) mx = idx;
+            }
+            return mx + 1;
         } else if (t->kind == T_GROUP || t->kind == T_REP) {
-            int c = trans_kids_count(t->kids, t->nkids, env);
+            int c = trans_count(t->kids, t->nkids, env, path, npath);
             if (c >= 0) return c;
         }
     }
     return -1;
 }
 
-static int trans_count(MTrans **kids, int n, MEnv *env) {
-    int c = trans_kids_count(kids, n, env);
-    return c < 0 ? 0 : c;
-}
-
 static void macro_map_add(CxArena *a, CxMacroMap *map, const char *name,
-                          CxSpan span) {
+                          CxSpan span, const char *file) {
     if (!map || !name) return;
     for (int i = 0; i < map->len; i++)
         if (map->items[i].name && !strcmp(map->items[i].name, name)) return;
@@ -1095,14 +1168,19 @@ static void macro_map_add(CxArena *a, CxMacroMap *map, const char *name,
     }
     map->items[map->len].name = cx_arena_strdup(a, name);
     map->items[map->len].span = span;
+    map->items[map->len].file = file ? cx_arena_strdup(a, file) : NULL;
     map->len++;
 }
 
-const CxSpan *cx_macro_map_find(const CxMacroMap *map, const char *name) {
+const CxSpan *cx_macro_map_find(const CxMacroMap *map, const char *name,
+                                const char **file_out) {
+    if (file_out) *file_out = NULL;
     if (!map || !name) return NULL;
     for (int i = 0; i < map->len; i++)
-        if (map->items[i].name && !strcmp(map->items[i].name, name))
+        if (map->items[i].name && !strcmp(map->items[i].name, name)) {
+            if (file_out) *file_out = map->items[i].file;
             return &map->items[i].span;
+        }
     return NULL;
 }
 
@@ -1137,7 +1215,7 @@ static void macro_req_add(CxArena *a, CxMacroMap *map, const char *type_text,
 /* Record a `macro_rules!` invocation: the name token's site and the macro's
  * definition span. Deduplicated by (name, site). */
 static void macro_invoke_add(CxArena *a, CxMacroMap *map, const char *name,
-                             CxSpan site, CxSpan def) {
+                             CxSpan site, CxSpan def, const char *def_file) {
     if (!map || !name) return;
     for (int i = 0; i < map->ninvokes; i++)
         if (map->invokes[i].name && !strcmp(map->invokes[i].name, name) &&
@@ -1158,17 +1236,21 @@ static void macro_invoke_add(CxArena *a, CxMacroMap *map, const char *name,
     map->invokes[map->ninvokes].name = cx_arena_strdup(a, name);
     map->invokes[map->ninvokes].site = site;
     map->invokes[map->ninvokes].def = def;
+    map->invokes[map->ninvokes].def_file =
+        def_file ? cx_arena_strdup(a, def_file) : NULL;
     map->ninvokes++;
 }
 
 const CxSpan *cx_macro_map_find_invocation(const CxMacroMap *map, int line,
-                                           int column) {
+                                           int column, const char **file_out) {
+    if (file_out) *file_out = NULL;
     if (!map) return NULL;
     for (int i = 0; i < map->ninvokes; i++) {
         CxSpan s = map->invokes[i].site;
         if (line < s.first_line || line > s.last_line) continue;
         if (line == s.first_line && column < s.first_column) continue;
         if (line == s.last_line && column > s.last_column) continue;
+        if (file_out) *file_out = map->invokes[i].def_file;
         return &map->invokes[i].def;
     }
     return NULL;
@@ -1191,36 +1273,50 @@ static void render_tokens(CxBuf *b, MToken **toks, int n) {
 }
 
 static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span, MPat **pat,
-                       int npat, MTrans **tr, int ntr, MEnv *env, int index,
-                       Out *o, CxMacroMap *map);
+                       int npat, MTrans **tr, int ntr, MEnv *env,
+                       const int *path, int npath, Out *o, CxMacroMap *map,
+                       const char *def_file);
 
-/* The single token captured by `$x` when it is an identifier, or NULL. Used to
- * form `$x::method` names and to record macro-definition origins. */
-static MToken *single_ident_cap(MBind *b, int index) {
-    if (!b) return NULL;
-    int ci = index >= 0 ? index : 0;
-    if (ci >= b->ncaps || b->lens[ci] != 1) return NULL;
+/* The capture whose repetition index path matches the current
+ * `path[0..npath)` at the capture's own depth, or -1. A capture belongs to the
+ * current position when its depth equals `npath` and its path is a prefix of
+ * `path`. */
+static int bind_find(const MBind *b, const int *path, int npath) {
+    if (!b) return -1;
+    for (int k = 0; k < b->ncaps; k++) {
+        if (b->depths[k] != npath) continue;
+        if (npath > 0 && b->paths[k] &&
+            memcmp(b->paths[k], path, sizeof(int) * (size_t)npath) != 0)
+            continue;
+        return k;
+    }
+    return -1;
+}
+
+/* The single token captured by `$x` at the current path when it is an
+ * identifier, or NULL. Used to form `$x::method` names and to record
+ * macro-definition origins. */
+static MToken *single_ident_cap(MBind *b, const int *path, int npath) {
+    int ci = bind_find(b, path, npath);
+    if (!b || ci < 0 || b->lens[ci] != 1) return NULL;
     MToken *t = b->caps[ci][0];
     return (t && t->kind == MT_IDENT) ? t : NULL;
 }
 
-static void transcribe_var(Out *o, MBind *b, int index) {
+static void transcribe_var(Out *o, MBind *b, const int *path, int npath) {
     if (!b) return;
-    if (index >= 0) {
-        if (index < b->ncaps) emit_tokens(o, b->caps[index], b->lens[index]);
-    } else if (b->ncaps == 1) {
+    int ci = bind_find(b, path, npath);
+    if (ci >= 0)
+        emit_tokens(o, b->caps[ci], b->lens[ci]);
+    else if (b->ncaps == 1)
         emit_tokens(o, b->caps[0], b->lens[0]);
-    } else if (b->ncaps == 0) {
-        /* used outside its repetition; emit nothing */
-    } else {
-        /* ambiguous: repeated metavariable used outside a repetition */
-        emit_tokens(o, b->caps[0], b->lens[0]);
-    }
+    /* used outside its repetition, or no matching iteration: emit nothing */
 }
 
 static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span, MPat **pat,
-                       int npat, MTrans **tr, int ntr, MEnv *env, int index,
-                       Out *o, CxMacroMap *map) {
+                       int npat, MTrans **tr, int ntr, MEnv *env,
+                       const int *path, int npath, Out *o, CxMacroMap *map,
+                       const char *def_file) {
     for (int i = 0; i < ntr; i++) {
         MTrans *t = tr[i];
         switch (t->kind) {
@@ -1235,9 +1331,9 @@ static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span, MPat **pat,
              * `Trait->member` and require `member` to be a method of `Trait`. */
             const char *frag = pat ? pat_find_frag(pat, npat, t->text) : NULL;
             if (frag && !strcmp(frag, "method")) {
-                int ci = index >= 0 ? index : 0;
-                if (b && ci < b->ncaps && b->lens[ci] == 3 &&
-                    b->caps[ci][1] && tok_is_punct(b->caps[ci][1], "::")) {
+                int ci = bind_find(b, path, npath);
+                if (b && ci >= 0 && b->lens[ci] == 3 && b->caps[ci][1] &&
+                    tok_is_punct(b->caps[ci][1], "::")) {
                     MToken *tr_tok = b->caps[ci][0];
                     MToken *me_tok = b->caps[ci][2];
                     if (tr_tok && me_tok) {
@@ -1250,18 +1346,18 @@ static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span, MPat **pat,
                     }
                 }
             }
-            MToken *bt = single_ident_cap(b, index);
+            MToken *bt = single_ident_cap(b, path, npath);
             /* `struct $name` defines a generated type: let definition on the
              * type name jump back to the `$name` in the macro. */
             if (bt && i > 0 && tr[i - 1]->kind == T_TOKEN &&
                 tr[i - 1]->text && !strcmp(tr[i - 1]->text, "struct"))
-                macro_map_add(a, map, bt->text, t->span);
+                macro_map_add(a, map, bt->text, t->span, def_file);
             /* `$name(params) { … }` is a generated function/constructor: map the
              * name so LSP definition jumps to the macro. */
             if (bt && i + 2 < ntr && tr[i + 1]->kind == T_GROUP &&
                 tr[i + 1]->open == '(' && tr[i + 2]->kind == T_GROUP &&
                 tr[i + 2]->open == '{')
-                macro_map_add(a, map, bt->text, t->span);
+                macro_map_add(a, map, bt->text, t->span, def_file);
             /* `$name::method` in a transcription is the public spelling of the
              * internal `Name__method` name. Emit the joined name and record the
              * `method` token so the LSP can jump to it in the macro body. */
@@ -1271,12 +1367,12 @@ static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span, MPat **pat,
                 is_ident_start(tr[i + 2]->text[0])) {
                 char *name = cx_arena_printf(a, "%s__%s", bt->text,
                                              tr[i + 2]->text);
-                macro_map_add(a, map, name, tr[i + 2]->span);
+                macro_map_add(a, map, name, tr[i + 2]->span, def_file);
                 out_text(o, name);
                 i += 2;
                 break;
             }
-            transcribe_var(o, b, index);
+            transcribe_var(o, b, path, npath);
             break;
         }
         case T_GROUP: {
@@ -1284,20 +1380,28 @@ static void transcribe(CxArena *a, CxDiagList *diags, CxSpan span, MPat **pat,
             char close[2] = {t->close, '\0'};
             out_text(o, open);
             o->join = 1;
-            transcribe(a, diags, span, pat, npat, t->kids, t->nkids, env, index,
-                       o, map);
+            transcribe(a, diags, span, pat, npat, t->kids, t->nkids, env, path,
+                       npath, o, map, def_file);
             out_text(o, close);
             break;
         }
         case T_REP: {
-            int count = trans_count(t->kids, t->nkids, env);
+            int count = trans_count(t->kids, t->nkids, env, path, npath);
+            if (count < 0) count = 0;
             for (int k = 0; k < count; k++) {
                 if (k > 0 && t->has_sep) {
                     char sep[2] = {t->sep, '\0'};
                     out_text(o, sep);
                 }
-                transcribe(a, diags, span, pat, npat, t->kids, t->nkids, env, k,
-                           o, map);
+                /* Extend the transcription path with this iteration's index so a
+                 * nested repetition transcribes the right captures. */
+                int *np = (int *)cx_arena_alloc(a,
+                                                sizeof(int) * (size_t)(npath + 1));
+                if (!np) break;
+                for (int j = 0; j < npath; j++) np[j] = path[j];
+                np[npath] = k;
+                transcribe(a, diags, span, pat, npat, t->kids, t->nkids, env, np,
+                           npath + 1, o, map, def_file);
             }
             break;
         }
@@ -1508,7 +1612,7 @@ static int is_macro_def_start(MToken **t, int i, int n) {
 /* Collect all `macro_rules!` definitions (recursively, at any block scope). */
 static void scan_defs(CxArena *a, CxDiagList *diags, const char *src,
                       MToken **toks, int n, MacroTable *tab, ReplVec *reps,
-                      int *found) {
+                      int *found, const char *file) {
     for (int i = 0; i < n; i++) {
         if (is_macro_def_start(toks, i, n)) {
             MToken *name = toks[i + 2];
@@ -1521,8 +1625,10 @@ static void scan_defs(CxArena *a, CxDiagList *diags, const char *src,
                 mac->rules = NULL;
                 mac->cap = 0;
                 mac->span = span;
+                mac->file = file ? cx_arena_strdup(a, file) : NULL;
             } else {
                 mac = table_add(a, tab, name->text, span);
+                if (mac) mac->file = file ? cx_arena_strdup(a, file) : NULL;
             }
             if (!mac) return;
             if (!parse_macro_body(a, diags, mac, body)) {
@@ -1552,7 +1658,7 @@ static void scan_defs(CxArena *a, CxDiagList *diags, const char *src,
         }
         if (toks[i]->kind == MT_GROUP)
             scan_defs(a, diags, src, toks[i]->kids, toks[i]->nkids, tab, reps,
-                      found);
+                      found, file);
     }
 }
 
@@ -1662,7 +1768,8 @@ static void collect_imports_from(CxArena *a, CxDiagList *diags, const char *src,
     if (collect_own) {
         ReplVec reps = {0};
         int found = 0;
-        scan_defs(a, diags, src, toks.items, toks.len, tab, &reps, &found);
+        scan_defs(a, diags, src, toks.items, toks.len, tab, &reps, &found,
+                  filename);
     }
 
     PathVec paths = {0};
@@ -1689,7 +1796,8 @@ static char *expand_invocation(CxArena *a, CxDiagList *diags, Macro *mac,
             pos == args->nkids) {
             /* Record the invocation itself so "go to definition" on its name
              * lands in the `macro_rules!` definition. */
-            if (map) macro_invoke_add(a, map, mac->name, span, mac->span);
+            if (map)
+                macro_invoke_add(a, map, mac->name, span, mac->span, mac->file);
             /* Checked `requires`: record the concrete type each constrained
              * metavariable was bound to, so the semantic pass can verify that
              * the type implements the required trait(s). */
@@ -1715,7 +1823,7 @@ static char *expand_invocation(CxArena *a, CxDiagList *diags, Macro *mac,
             cx_buf_init(&buf);
             Out out = {&buf, 0};
             transcribe(a, diags, span, rule->pat, rule->npat, rule->tr,
-                       rule->ntr, &env, -1, &out, map);
+                       rule->ntr, &env, NULL, 0, &out, map, mac->file);
             char *result = cx_arena_strdup(a, buf.data ? buf.data : "");
             cx_buf_free(&buf);
             return result;
@@ -1868,7 +1976,7 @@ char *cx_macro_expand(CxArena *arena, const char *src, size_t len,
         int found = 0;
 
         scan_defs(arena, diags, cur, toks.items, toks.len, &table, &reps,
-                  &found);
+                  &found, filename);
         scan_invocations(arena, diags, toks.items, toks.len, &table, &reps,
                          &found, 1, map);
 

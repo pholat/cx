@@ -25,6 +25,10 @@ CxDocument *cx_doc_store_put(const char *uri, const char *text, size_t len,
                              int version);
 void        cx_doc_store_remove(const char *uri);
 
+/* The head of the list of all open documents (for workspace-wide features such
+ * as cross-file `references`). */
+CxDocument *cx_doc_store_all(void);
+
 /* ---------------------------------------------------------------- features */
 /* Build a textDocument/publishDiagnostics notification for `uri`/`text` into
  * `out`. Returns the number of diagnostics found. */

@@ -50,6 +50,12 @@ CxNode *cx_sema_find_trait_method(const CxSymbolTable *table, const char *trait,
 const char *cx_sema_receiver_type(CxArena *arena, CxNode *tu, int line,
                                   int column, const char *name);
 
+/* Best-effort type of an already-resolved expression node, used by the LSP to
+ * type a *computed* method receiver (`a.b().`): `table` supplies function
+ * return types. Returns a type string owned by `arena`/the arena, or NULL. */
+const char *cx_sema_expr_type(CxArena *arena, const CxSymbolTable *table,
+                              CxNode *expr);
+
 int       cx_sema_type_has_dtor(const CxSymbolTable *table, const char *type);
 CxSymbol *cx_sema_dtor_for(const CxSymbolTable *table, const char *type);
 

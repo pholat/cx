@@ -161,8 +161,11 @@ q->get_y();    // q is a Point *
   emitted verbatim as `recv.method(args)`, so it still compiles as a C call.
 - The grammar distinguishes a method call from a field access by the `(` after
   the member; a `.`/`->` member with no `(` is always a field access.
-- Computed receivers and chained calls (`a.b().c()`) are not resolved yet; use
-  `Type::method(…)` for those.
+- **Chained and computed receivers** lower too: the receiver is resolved first,
+  so `a.b().c()` uses the return type of `A__b`, and `make().m()` /
+  `arr[i].m()` / `(expr).m()` resolve through the call return type, struct
+  member type, element type, parentheses or cast. When the receiver type cannot
+  be inferred the call is left verbatim.
 
 ## 6. Statements
 
@@ -301,11 +304,14 @@ define_pair!(Point2, int);
 
 - A macro has one or more `(pattern) => { transcription }` rules; a pattern
   matches a token tree with metavariables and repetition.
-- **Fragments**: `$x:ident`, `$x:field`, `$x:tt`, `$x:lit`, `$x:path`,
-  `$x:ty`, `$x:expr`, `$x:stmt`, and `$x:method` (a qualified `Trait::member`
-  reference). `$x:expr` / `$x:ty` capture to the next top-level `,` / `;`.
-- **Repetition**: single-level `$( … )*` / `$( … )+`, optionally with a
-  separator (`$( … ),*`). `##` concatenates tokens.
+- **Fragments**: `$x:ident`, `$x:field`, `$x:tt`, `$x:item`, `$x:block`, `$x:lit`,
+  `$x:path`, `$x:ty`, `$x:expr`, `$x:stmt`, and `$x:method` (a qualified
+  `Trait::member` reference). `$x:expr` / `$x:ty` capture to the next top-level
+  `,` / `;`; `$x:item` captures a balanced group or a `;`-terminated run;
+  `$x:block` captures a `{ … }`.
+- **Repetition**: `$( … )*` / `$( … )+`, optionally with a separator
+  (`$( … ),*`). Repetitions nest (`$( $( … )* )*`); each metavariable capture
+  records the index path that reaches it. `##` concatenates tokens.
 - `$name::method` in a transcription is the public spelling of the internal
   `Name__method` name; the expander records the origin so the LSP can jump from
   a generated method to the macro body.

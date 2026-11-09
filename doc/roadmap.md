@@ -14,14 +14,16 @@
 
 Implemented: **C interop** (`raw { … }`, `#include`, `NAME!(…)` passthrough),
 **static traits** (`trait`/`implements`), **attributes** (`#[…]`),
-**`macro_rules!`** (item/statement/expression position, repetitions, `##`,
-`requires`, `$x:method`, imports), **checked trait requirements** (structs,
-primitives, function/method bindings), the **paired `.hx`/`.cx` model**,
-**`auto` return types**, **`.`/`->` method calls** (receiver-type tracking),
-the **klib-backed container layer** (`std_*.hx` modules, owning variants,
-teardown), **macros across `import` boundaries**, **`do…while`** and the
-**conditional `?:`**, and the **LSP** navigation/hover/completion/signature/
-occurrence features.
+**`macro_rules!`** (item/statement/expression position, repetitions incl.
+**nested**, `##`, `requires`, `$x:method`, `$x:block` / `$x:item`, imports),
+**checked trait requirements** (structs, primitives, function/method bindings),
+the **paired `.hx`/`.cx` model**, **`auto` return types**, **`.`/`->` method
+calls** (receiver-type tracking, **chained and computed receivers**), the
+**klib-backed container layer** (`std_*.hx` modules, owning variants, teardown,
+**`std_iter.hx` `for_each!`**), **macros across `import` boundaries**,
+**`do…while`** and the **conditional `?:`**, and the **LSP**
+navigation/hover/completion/signature/occurrence features (read/write highlight
+kinds, doc comments on hover, cross-open-document references/rename).
 
 For the dated details of any item, see [`changelog.md`](./changelog.md). This
 file keeps only what is **next**.
@@ -33,39 +35,16 @@ is in **Refinement** below.
 
 | # | Item | Area |
 | --: | :-- | :-- |
-| 1 | **Chained receiver calls** (`a.b().c()`) and **computed receivers**. | Receiver types |
-| 2 | **Trait associated types/constants** (`trait Iterable { type Item; … }`), then checked `requires` for them. | Traits |
-| 3 | **Macro hygiene** (fresh-name renaming) and **non-greedy fragments** (so `($k:expr => $v:expr)` can be written). | Macro system |
-| 4 | **Cross-file (workspace) `references`** and a **binding-aware `rename`**. | LSP |
-| 5 | **`for!` over containers** — an iterator protocol lowering to `at`/`len` (or a `next` method) trait members. | Containers / stdlib |
-| 6 | **More macro fragments** (`$x:block`, `$x:item`) and **nested repetitions** (`$( $( … )* )*`). | Macro system |
-| 7 | **Doc comments on macro definitions** (`/// …`) for hover, and **LSP indexing of macro definitions**. | Macro system |
-| 8 | **More traits**: supertraits and default method bodies; postfix vtable calls (`x.T->m(a)` / `x.m(a)`); derived/blanket implementations; receiver forms other than `self`. | Traits |
-| 9 | **LSP polish**: read/write `documentHighlight` kinds; `semanticTokens`; inlay hints; doc comments on **all** hover targets; `codeAction` "implement missing trait method"; `positionEncoding` (UTF-16 columns); workspace symbols; call hierarchy. | LSP |
-| 10 | **Language surface**: the comma operator; `static`/`extern`/`inline` specifiers; array types; **multiple value return/unpacking** (`(a, b) = f();`); **scoped imports**; `defer`. | Language surface |
-| 11 | **Tooling / infrastructure**: a **compile database** (`compile_commands.json`); **golden-output tests** (diff the generated C, not just "does it compile") plus fuzzing; `#line`/debug-info polish and a CI target; **paired `.hx`/`.cx` follow-ups** (out-of-line ctor/dtor definitions and `.c`-only helper prototypes). | Tooling |
-| 12 | **Considered extensions (not committed)** — see the section at the end. | Extensions |
-| 13 | **Struct-keyed maps** (user-supplied hash/equal pair) and a real **capacity/growth policy** for the container layer; then a `std` overview. | Containers / stdlib |
-
-## Known issues
-
-- **`gd` on a macro invocation inside an imported `.hx` module.** In
-  `tests/golden/std_demo.cx`, `gd` on `define_list!` should jump into
-  `std_list.hx`; `define_int_map!` can report `Invalid cursor line: out of …`,
-  and `std_list.hx` does not jump to itself. The `CxMacroMap` records the
-  definition span but not reliably the **source file** for imported
-  definitions. See *LSP* in Refinement.
+| 1 | **Macro hygiene** (fresh-name renaming) and **non-greedy fragments** (so `($k:expr => $v:expr)` can be written). | Macro system |
+| 2 | **Doc comments on macro definitions** (`/// …`) for hover, and **LSP indexing of macro definitions**. | Macro system |
+| 3 | **More traits**: supertraits and default method bodies; postfix vtable calls (`x.T->m(a)` / `x.m(a)`); derived/blanket implementations; receiver forms other than `self`. | Traits |
+| 4 | **LSP polish (remaining)**: binding-aware `rename`; on-disk workspace indexing; `semanticTokens`; inlay hints; `codeAction` "implement missing trait method"; `positionEncoding` (UTF-16 columns); workspace symbols; call hierarchy. | LSP |
+| 5 | **Language surface**: the comma operator; `static`/`extern`/`inline` specifiers; array types; **multiple value return/unpacking** (`(a, b) = f();`); **scoped imports**; `defer`. | Language surface |
+| 6 | **Tooling / infrastructure**: a **compile database** (`compile_commands.json`); **golden-output tests** (diff the generated C, not just "does it compile") plus fuzzing; `#line`/debug-info polish and a CI target; **paired `.hx`/`.cx` follow-ups** (out-of-line ctor/dtor definitions and `.c`-only helper prototypes). | Tooling |
+| 7 | **Considered extensions (not committed)** — see the section at the end. | Extensions |
+| 8 | **Struct-keyed maps** (user-supplied hash/equal pair) and a real **capacity/growth policy** for the container layer; then a `std` overview. | Containers / stdlib |
 
 ## Refinement
-
-### Receiver types → `.`-method calls
-
-Landed: the transpiler lowering (block-scoped environment; `self` bound in
-constructor/destructor/`implements` bodies) and the LSP tooling (dot-completion
-for methods **and** fields, hover, `gd`, signature help). Remaining: chained
-`a.b().c()` and computed receivers. `src/sema/scope.c` is still the scaffold;
-the current environment lives in `resolve_receivers`
-(`src/sema/symbols.c`).
 
 ### Containers / stdlib
 
@@ -77,8 +56,8 @@ the current environment lives in `resolve_receivers`
 - **Infer the trait from the object** — generate `($x).<Trait>::<member>` from a
   `requires $x: A + B` clause so the call site can be `both_total!($x)`, with
   `A::a` reserved for ambiguous cases.
-- **`for` over containers** — an iterator protocol lowering to `at`/`len` (or a
-  `next` method) trait members.
+- **Dedicated `for!` loop syntax** over the `len`/`at` protocol (the
+  `for_each!` macro landed in `std_iter.hx`).
 
 ### Macro system
 
@@ -87,19 +66,12 @@ the current environment lives in `resolve_receivers`
 - **Non-greedy fragments** — `$x:expr` / `$x:ty` capture to the next top-level
   `,` / `;`, so `($k:expr => $v:expr)` cannot be written. A backtracking /
   balanced matcher (or a must-not-be lookahead) fixes composition.
-- **Nested repetitions** — only single-level `$( … )*` / `$( … )+` is modelled;
-  full recursion through `match_rep` / `transcribe` should support
-  `$( $( … )* )*`.
-- **More fragments** — `$x:block`, `$x:item`.
 - **Doc comments on macro definitions** (`/// …`) captured by the expander and
   surfaced for hover; **LSP indexing of macro definitions** (currently gone
   before the AST, so `documentSymbol` / rename cannot see them).
 
 ### Traits
 
-- **Associated types/constants** — needed by real generic containers
-  (`trait Iterable { type Item; … }`); `check_macro_requires` and the vtable
-  emitter would carry them.
 - **Supertraits and default method bodies**
   (`trait X: A + B { int f(self) { … } }`).
 - **Postfix vtable calls** (`x.T->m(a)` / `x.m(a)`) — removes the
@@ -110,13 +82,9 @@ the current environment lives in `resolve_receivers`
 
 ### LSP
 
-- Fix **`gd` on macro invocations in imported `.hx` modules** (Known issues):
-  record and use the definition's source file.
-- Richer `documentHighlight` kinds (read/write), workspace-wide (cross-file)
-  `references`; `semanticTokens`, inlay hints.
-- Chained receiver calls (`a.b().c()`) and computed receivers.
-- Doc comments (`//`, `///`) attached to **all** hover targets, not just trait
-  methods.
+- **Binding-aware `rename`** and **on-disk workspace indexing** (`references` /
+  `rename` currently cover open documents and are lexical).
+- `semanticTokens`, inlay hints.
 - `codeAction` "implement missing trait method" from the trait's required set.
 - `positionEncoding` negotiation (UTF-16 columns); workspace symbols; call
   hierarchy.
@@ -170,3 +138,11 @@ the current environment lives in `resolve_receivers`
   returns a static string per element via a `switch` (and `""` as fallback).
 - move semantics for real RAAI - but I've no idea how to make it plain c transpilable
   at the moment.
+- c smartptr, in raw c it could possibly be done with double pointers and hepers
+  calls on these.
+- **Trait associated types/constants** — `trait Iterable { type Item; … }` (and
+  a constant spelling that does not clash with the `const` type qualifier).
+  Paused for now: a trait's members are method signatures only. It would let
+  generic containers name an element type without a macro parameter, but needs
+  per-implementation materialisation and `requires` checking.
+

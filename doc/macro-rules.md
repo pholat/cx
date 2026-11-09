@@ -6,15 +6,16 @@
 > Implemented: `raw { … }` / `NAME!( … )` C passthrough; `macro_rules!`
 > definitions and invocation in **item, statement and expression** position;
 > fragments (`ident`, `ty`, `expr`, `stmt`, `tt`, `lit`, `path`, `field`,
-> `method`); repetitions (`$( … )*` / `$( … )+`, optional single separator);
-> `##` concatenation; `$name::method` spelling; `requires` clauses with checked
-> conformance; `$x:method` (`Trait::member` → `Trait->member`); nested
-> invocations; hoisting; macro definitions crossing `import`; `cx expand`; and
-> the `CxMacroMap` origins used by the LSP.
+> `method`, `block`, `item`); repetitions (`$( … )*` / `$( … )+`, optional
+> single separator, **nested** `$( $( … )* )*`); `##` concatenation;
+> `$name::method` spelling; `requires` clauses with checked conformance;
+> `$x:method` (`Trait::member` → `Trait->member`); nested invocations;
+> hoisting; macro definitions crossing `import`; `cx expand`; and the
+> `CxMacroMap` origins used by the LSP (including the **defining file**, so
+> imported-macro `gd` lands in the module).
 >
 > Not implemented: hygiene, a fully backtracking matcher (fragment capture is
-> greedy), nested repetitions, `$x:block` / `$x:item`, macro-definition indexing
-> in the LSP, and expansion preview.
+> greedy), macro-definition indexing in the LSP, and expansion preview.
 >
 > Syntax/lowering summary: [`language.md`](./language.md) §11. Implementation
 > notes: [`technical.md`](./technical.md) §7. Pending work:
@@ -89,8 +90,10 @@ generated-name → macro-definition origin for LSP `definition`.
 - `$name##_new` — **concatenation** (`##`) instead of Rust's `concat_idents!`.
   Needed to derive companion names, very common in C.
 - Fragments: `$x:ident`, `$x:ty`, `$x:expr`, `$x:stmt`, `$x:tt`, `$x:lit`,
-  `$x:path`, `$x:field`, `$x:method`.
-- Repetition: `$( … ),*`, `$( … );*`, `$( … )*`, `$( … )+`. A trailing
+  `$x:path`, `$x:field`, `$x:method`, `$x:block`, `$x:item`.
+- Repetition: `$( … ),*`, `$( … );*`, `$( … )*`, `$( … )+`, and nested
+  `$( $( … )* )*`. Each capture records the index path that reaches it, so a
+  nested repetition transcribes the right per-iteration binding. A trailing
   separator is accepted.
 - `NAME!(…)` whose `NAME` is not a `macro_rules!` macro is a **C** macro
   invocation, emitted verbatim. This keeps the klib passthrough working.
@@ -124,9 +127,9 @@ Consequences:
   pattern cannot put another literal fragment after them unambiguously.
 - A trailing `;` after an item-position invocation is consumed (the expansion
   supplies the declarations), while an expression-position `;` is preserved.
-- Nested repetitions are not fully modelled (the outer count is inferred from
-  the first metavariable it finds); single-level `$( … )*` / `$( … )+` is the
-  supported case.
+- Nested repetitions are supported through a per-capture index path; a
+  metavariable bound at a shallower depth is repeated (its single capture is
+  emitted on every iteration).
 - Hygiene is not implemented: identifiers introduced by the body are emitted
   verbatim.
 
@@ -172,7 +175,9 @@ invocation/source region rather than every expanded token.
 - Generated-name → macro-definition origins are recorded for `$name::method`,
   generated functions (`$name(params) { … }`) and `struct $name`; **jump-to-
   definition for the `klib_*.cx` / `std_*.hx` container methods works**.
-- `gd` on a `macro_rules!` invocation jumps to the definition.
+- `gd` on a `macro_rules!` invocation jumps to the definition, **including an
+  invocation of a macro defined in an imported `.hx` module** (the origin now
+  records the defining file, not just a span).
 - Completion after `Type::` lists generated members as `Type::method`; the
   general list shows macro-generated `A__B` names as `A::B`.
 - **Inside** a macro body/invocation, completion/definition are best-effort.
@@ -202,8 +207,11 @@ instantiations. The user-facing container layer now ships as module files:
   `define_str_set!`
 - `tests/golden/std_vec.hx` — element-typed `define_vec!` with
   `requires $t: Drop`
+- `tests/golden/std_iter.hx` — `for_each!` (the `for`-over-containers lowering
+  over `.len()` / `.at(i)`, element type via `auto`)
 - `tests/golden/std_drop.hx` — the `Drop` interface
-- `tests/golden/std_demo.cx`, `std_owned_demo.cx`, `std_str_demo.cx` — examples
+- `tests/golden/std_demo.cx`, `std_owned_demo.cx`, `std_str_demo.cx`,
+  `std_iter_demo.cx` — examples
 
 Each module carries the C context it needs (`#include`s and helpers) in its
 generated header, so an importer needs nothing extra.

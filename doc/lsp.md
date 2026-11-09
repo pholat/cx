@@ -15,11 +15,11 @@ Implemented:
 The semantic features reparse the stored document through the shared parser +
 sema. `documentHighlight` / `references` / `rename` are **lexical**: they scan
 the same file for whole-word occurrences of the identifier under the cursor,
-skipping comments and string/char literals (`references` answers `[]` when there
-are none, `documentHighlight` reports `kind: 1`, and `rename` returns a
-`WorkspaceEdit` whose single-file `changes` map lists one `{range, newText}` per
-occurrence). Cross-file `references` and a binding-aware `rename` are not
-implemented.
+skipping comments and string/char literals. `documentHighlight` reports
+**read/write** kinds (`2`/`3`, an assignment-target heuristic);
+`references` and `rename` additionally scan every **open** document (open-document
+workspace scope) and `rename` returns a multi-file `WorkspaceEdit` `changes`
+map. Binding-aware `rename` and on-disk workspace indexing are still future work.
 
 ## Resolution order
 
@@ -38,7 +38,9 @@ For `definition` / hover:
    trait), or a trait method through the pointer (`recv.Trait->method`).
 4. **A `macro_rules!` invocation at the cursor**
    (`cx_macro_map_find_invocation`) — `gd` on `define_int_map!` jumps to the
-   `macro_rules!` definition.
+   `macro_rules!` definition. The recorded origin includes the **defining file**,
+   so an invocation of a macro defined in an imported `.hx` jumps into that
+   module.
 5. **The innermost named AST node** (`cx_lsp_node_at` walks the tree
    unconditionally and matches on the node's own span).
 
@@ -96,12 +98,17 @@ so `self.` completes/hovers/`gd`s the same way.
 
 ## Known limitations
 
-- `gd` on a macro invocation in an imported `.hx` module can land in the wrong
-  file or report an invalid cursor line; see [`roadmap.md`](./roadmap.md)
-  *Known issues*.
-- Cross-file `references` and a binding-aware `rename` are not implemented.
+- Cross-file `references` / `rename` cover **open documents** only, and the
+  match is lexical — a genuinely binding-aware `rename` and on-disk indexing
+  are not implemented.
+- A **computed** receiver (`a.b().`, `f(x).`) is typed by reparsing a repaired
+  copy with a marker call (`cx_lsp_computed_receiver_base`), so its members are
+  offered; receivers built from an untypable local subscript still fall back to
+  the general list.
 - `positionEncoding` is not negotiated (columns are byte offsets).
 - Macro definitions are not indexed (they are gone before the AST is built).
+- `semanticTokens`, inlay hints, workspace symbols, call hierarchy and the
+  "implement missing trait method" `codeAction` are not implemented.
 
 ## Editor setup
 

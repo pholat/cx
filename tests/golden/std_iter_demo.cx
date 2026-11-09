@@ -1,0 +1,31 @@
+import "std_iter.hx";
+
+// A tiny container proving the `for_each!` lowering: `Nums__len` / `Nums__at`
+// are the plain instance methods the macro calls through `.`, and the element
+// type is inferred by `auto`.
+struct Nums {
+    int a;
+    int b;
+    int c;
+};
+
+int Nums__len(Nums *s) { return 3; }
+
+int Nums__at(Nums *s, int i) {
+    if (i == 0) return s->a;
+    if (i == 1) return s->b;
+    return s->c;
+}
+
+int main() {
+    Nums s;
+    s.a = 1;
+    s.b = 2;
+    s.c = 3;
+
+    int total = 0;
+    for_each!(x, s, {
+        total += x;
+    });
+    return total;
+}

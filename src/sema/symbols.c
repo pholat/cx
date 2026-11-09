@@ -449,6 +449,74 @@ static const char *scope_lookup(const Scope *s, const char *name) {
 
 static void resolve_receivers(BuildCtx *c, Scope *s, CxNode *n);
 
+/* Best-effort static type of an expression, used to type a method receiver.
+ * Handles identifiers (locals/params/globals), constructor/function calls,
+ * chained method calls (`a.b()` -> the return type of `A__b`), field/arrow
+ * access (struct member type), subscripts (element type), parens, casts and
+ * simple binary/ternary expressions. Returns NULL when the type is unknown. */
+static const char *expr_type(BuildCtx *c, Scope *s, CxNode *e) {
+    if (!e) return NULL;
+    switch (e->kind) {
+    case CX_NODE_EXPR_IDENT: {
+        const char *t = scope_lookup(s, e->name);
+        if (t) return t;
+        CxSymbol *g = cx_sema_find_symbol(c->table, e->name);
+        return g ? g->type : NULL;
+    }
+    case CX_NODE_EXPR_PAREN:
+        return expr_type(c, s, e->lhs);
+    case CX_NODE_EXPR_CAST:
+        return e->type;
+    case CX_NODE_EXPR_BINARY:
+    case CX_NODE_EXPR_TERNARY:
+        return expr_type(c, s, e->lhs);
+    case CX_NODE_EXPR_INDEX:
+        return expr_type(c, s, e->lhs);
+    case CX_NODE_EXPR_CALL: {
+        if (!e->lhs && e->name) {
+            CxSymbol *fn = cx_sema_find_function(c->table, e->name);
+            if (fn && fn->type) return fn->type;
+            CxSymbol *st = cx_sema_find_struct(c->table, e->name);
+            if (st) return st->name; /* constructor call */
+        }
+        /* A still-unresolved `recv.method()`: resolve through the receiver
+         * type (`a.b()` -> the return type of `A__b`). */
+        if (e->lhs && e->name) {
+            const char *rt = expr_type(c, s, e->lhs);
+            if (rt) {
+                char base[128];
+                type_base(rt, base, sizeof base);
+                char *fname =
+                    cx_arena_printf(c->arena, "%s__%s", base, e->name);
+                CxSymbol *fn = cx_sema_find_function(c->table, fname);
+                if (fn && fn->type) return fn->type;
+            }
+        }
+        return NULL;
+    }
+    case CX_NODE_EXPR_FIELD:
+    case CX_NODE_EXPR_ARROW: {
+        const char *t = expr_type(c, s, e->lhs);
+        if (!t) return NULL;
+        char base[128];
+        type_base(t, base, sizeof base);
+        CxSymbol *st = cx_sema_find_struct(c->table, base);
+        CxNode *decl = st ? st->decl : NULL;
+        for (int i = 0; decl && i < decl->children.len; i++) {
+            CxNode *m = decl->children.items[i];
+            if (m->kind != CX_NODE_VAR_DECL) continue;
+            for (int k = 0; k < m->children.len; k++) {
+                CxNode *d = m->children.items[k];
+                if (d->name && !strcmp(d->name, e->name)) return m->type;
+            }
+        }
+        return NULL;
+    }
+    default:
+        return NULL;
+    }
+}
+
 /* Walk a method-like body (constructor/destructor/`implements` method) with
  * `self` bound to the enclosing struct's type (`<Struct> *`, since the emitter
  * binds the receiver as a pointer) and the declared parameters in scope. */
@@ -530,14 +598,12 @@ static void resolve_receivers(BuildCtx *c, Scope *s, CxNode *n) {
     }
 
     if (n->kind == CX_NODE_EXPR_CALL && n->lhs && n->name) {
-        const char *rt = NULL;
-        if (n->lhs->kind == CX_NODE_EXPR_IDENT) {
-            rt = scope_lookup(s, n->lhs->name);
-            if (!rt) {
-                CxSymbol *g = cx_sema_find_symbol(c->table, n->lhs->name);
-                if (g && g->type) rt = g->type;
-            }
-        }
+        /* Resolve the receiver first: for a chained call `a.b().c()` the inner
+         * call must become `Base__b(&a)` before the outer receiver's type can
+         * be read off its return type. This also handles computed receivers
+         * such as `make().method()` or `arr[i].method()`. */
+        resolve_receivers(c, s, n->lhs);
+        const char *rt = expr_type(c, s, n->lhs);
         if (rt) {
             char base[128];
             type_base(rt, base, sizeof base);
@@ -578,6 +644,18 @@ static void resolve_receivers(BuildCtx *c, Scope *s, CxNode *n) {
 }
 
 /* ------------------------------------------------------ LSP receiver lookup */
+
+/* See symbols.h. Types an already-resolved expression for computed receivers. */
+const char *cx_sema_expr_type(CxArena *arena, const CxSymbolTable *table,
+                              CxNode *expr) {
+    if (!arena || !expr) return NULL;
+    BuildCtx c;
+    c.arena = arena;
+    c.table = (CxSymbolTable *)table;
+    c.diags = NULL;
+    Scope s = {arena, NULL, 0, 0};
+    return expr_type(&c, &s, expr);
+}
 
 static int pos_in_span(CxSpan s, int line, int col) {
     if (s.first_line <= 0) return 0;
@@ -649,6 +727,13 @@ static void collect_visible(CxNode *n, int line, int col, Scope *s) {
     if (!n) return;
     if (n->kind == CX_NODE_BLOCK) {
         int save = s->len;
+        /* Keep this block's bindings when the cursor is inside it; pop them when
+         * the whole block is before the cursor (its scope has closed). */
+        int within =
+            (line > n->span.first_line ||
+             (line == n->span.first_line && col >= n->span.first_column)) &&
+            (line < n->span.last_line ||
+             (line == n->span.last_line && col <= n->span.last_column));
         for (int i = 0; i < n->children.len; i++) {
             CxNode *st = n->children.items[i];
             if (st->span.first_line > line ||
@@ -656,7 +741,7 @@ static void collect_visible(CxNode *n, int line, int col, Scope *s) {
                 continue; /* declared after the cursor */
             collect_visible(st, line, col, s);
         }
-        s->len = save;
+        if (!within) s->len = save;
         return;
     }
     if (n->kind == CX_NODE_VAR_DECL) {
@@ -686,7 +771,21 @@ const char *cx_sema_receiver_type(CxArena *arena, CxNode *tu, int line,
         CxNode *p = fn->params.items[i];
         if (p->name && p->type) scope_push(&s, p->name, p->type);
     }
-    collect_visible(fn->body, line, column, &s);
+    /* Walk the body's top-level statements individually: passing the body block
+     * to `collect_visible` would pop its own bindings on exit (block scoping),
+     * leaving no locals to look up. Nested blocks still pop as they should. */
+    CxNode *body = fn->body;
+    if (body && body->kind == CX_NODE_BLOCK) {
+        for (int i = 0; i < body->children.len; i++) {
+            CxNode *st = body->children.items[i];
+            if (st->span.first_line > line ||
+                (st->span.first_line == line && st->span.first_column > column))
+                continue; /* declared after the cursor */
+            collect_visible(st, line, column, &s);
+        }
+    } else {
+        collect_visible(body, line, column, &s);
+    }
     return scope_lookup(&s, name);
 }
 

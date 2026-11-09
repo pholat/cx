@@ -51,7 +51,8 @@ Design decisions:
 
 Open trait work (associated types/constants, supertraits, default method
 bodies, postfix vtable calls, derived/blanket impls, receiver forms other than
-`self`) is listed in [`roadmap.md`](./roadmap.md) under *Traits*.
+`self`) is listed in [`roadmap.md`](./roadmap.md) under *Traits* and *Considered
+extensions*. For now a trait's members are **method signatures only**.
 
 ## 3. Macros and the container layer
 

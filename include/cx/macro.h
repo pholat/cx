@@ -24,6 +24,7 @@
 typedef struct {
     char   *name; /* generated Cx name, e.g. "IntList__new" */
     CxSpan  span; /* source span in the macro definition */
+    char   *file; /* file the macro definition lives in (imported `.hx`?) */
 } CxMacroOrigin;
 
 /* One `requires` binding observed at an invocation site: the concrete type that
@@ -43,9 +44,10 @@ typedef struct {
  * (`site`) and where the macro is defined (`def`). The LSP uses this so "go to
  * definition" on the invocation name lands in the `macro_rules!` definition. */
 typedef struct {
-    char   *name; /* invocation name, e.g. "define_int_map" */
-    CxSpan  site; /* invocation site in the source (the name token) */
-    CxSpan  def;  /* `macro_rules!` definition span */
+    char   *name;     /* invocation name, e.g. "define_int_map" */
+    CxSpan  site;     /* invocation site in the source (the name token) */
+    CxSpan  def;      /* `macro_rules!` definition span */
+    char   *def_file; /* file the `macro_rules!` definition lives in */
 } CxMacroInvoke;
 
 typedef struct CxMacroMap {
@@ -60,12 +62,18 @@ typedef struct CxMacroMap {
     int            invcap;
 } CxMacroMap;
 
-const CxSpan *cx_macro_map_find(const CxMacroMap *map, const char *name);
+/* The `macro_rules!` definition span for a generated name, or NULL. When
+ * `file_out` is non-NULL it receives the file the definition lives in (may be a
+ * different file than the one being edited when the macro came from an
+ * imported `.hx`). */
+const CxSpan *cx_macro_map_find(const CxMacroMap *map, const char *name,
+                                const char **file_out);
 
 /* The `macro_rules!` definition span for a macro invocation covering the
- * 1-based (line, column), or NULL. */
+ * 1-based (line, column), or NULL. `file_out` (if non-NULL) receives the file
+ * the definition lives in. */
 const CxSpan *cx_macro_map_find_invocation(const CxMacroMap *map, int line,
-                                           int column);
+                                           int column, const char **file_out);
 
 /* `map` is optional; when provided it receives generated-name origins and the
  * concrete types bound to `requires`-constrained metavariables. */

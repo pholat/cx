@@ -23,7 +23,7 @@ static void render_function(CxBuf *md, CxSymbol *sym, const char *display) {
 /* A macro-generated `A__B` name is shown as the source spelling `A::B`. */
 static const char *display_name(CxMacroMap *map, CxSymbol *sym, char *buf,
                                 size_t n) {
-    if (map && sym->name && cx_macro_map_find(map, sym->name)) {
+    if (map && sym->name && cx_macro_map_find(map, sym->name, NULL)) {
         char *dd = strstr(sym->name, "__");
         if (dd) {
             snprintf(buf, n, "%.*s::%s", (int)(dd - sym->name), sym->name,
@@ -178,6 +178,13 @@ int cx_lsp_hover(CxBuf *out, const char *uri, const char *text, size_t len,
         cx_buf_putc(&md, ')');
         have = 1;
     } else if (sym) {
+        /* Lead every hover target with its `//` doc comment, not just trait
+         * methods (symbols, structs, functions, globals). */
+        char symdoc[1024];
+        if (cx_lsp_doc_above(text, sym->span.first_line, symdoc,
+                             sizeof symdoc) &&
+            symdoc[0])
+            cx_buf_printf(&md, "%s\n\n", symdoc);
         render_symbol(&md, map, sym, override[0] ? override : NULL);
         have = 1;
     } else if (member_md[0]) {

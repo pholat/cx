@@ -57,9 +57,12 @@ int cx_lsp_definition(CxBuf *out, const char *uri, const char *text, size_t len,
         sym = cx_sema_find_symbol(sema, word);
 
     if (sym) {
-        const CxSpan *origin = map ? cx_macro_map_find(map, sym->name) : NULL;
+        const char *origin_file = NULL;
+        const CxSpan *origin =
+            map ? cx_macro_map_find(map, sym->name, &origin_file) : NULL;
         if (origin) {
             found = *origin;
+            found_file = origin_file ? origin_file : uri;
             have = 1;
         } else if (sym->decl) {
             found = sym->decl->span;
@@ -75,10 +78,13 @@ int cx_lsp_definition(CxBuf *out, const char *uri, const char *text, size_t len,
          * generated function's declaration. */
         char full[260];
         snprintf(full, sizeof full, "%s__%s", qual, member);
-        const CxSpan *origin = map ? cx_macro_map_find(map, full) : NULL;
+        const char *origin_file = NULL;
+        const CxSpan *origin =
+            map ? cx_macro_map_find(map, full, &origin_file) : NULL;
         CxSymbol *fn = cx_sema_find_function(sema, full);
         if (origin) {
             found = *origin;
+            found_file = origin_file ? origin_file : uri;
             have = 1;
         } else if (fn && fn->decl) {
             found = fn->decl->span;
@@ -117,10 +123,13 @@ int cx_lsp_definition(CxBuf *out, const char *uri, const char *text, size_t len,
         if (bt) {
             char full[260];
             snprintf(full, sizeof full, "%s__%s", bt, dmem);
-            const CxSpan *origin = map ? cx_macro_map_find(map, full) : NULL;
+            const char *origin_file = NULL;
+            const CxSpan *origin =
+                map ? cx_macro_map_find(map, full, &origin_file) : NULL;
             CxSymbol *fn = cx_sema_find_function(sema, full);
             if (origin) {
                 found = *origin;
+                found_file = origin_file ? origin_file : uri;
                 have = 1;
             } else if (fn && fn->decl) {
                 found = fn->decl->span;
@@ -170,10 +179,13 @@ int cx_lsp_definition(CxBuf *out, const char *uri, const char *text, size_t len,
     }
 
     if (!have && map) {
+        const char *def_file = NULL;
         const CxSpan *def =
-            cx_macro_map_find_invocation(map, line + 1, character + 1);
+            cx_macro_map_find_invocation(map, line + 1, character + 1,
+                                         &def_file);
         if (def) {
             found = *def;
+            found_file = def_file ? def_file : uri;
             have = 1;
         }
     }
@@ -183,10 +195,14 @@ int cx_lsp_definition(CxBuf *out, const char *uri, const char *text, size_t len,
         if (node && node->name) {
             CxSymbol *s2 = cx_sema_find_symbol(sema, node->name);
             if (s2) {
-                const CxSpan *origin =
-                    map ? cx_macro_map_find(map, s2->name) : NULL;
+                const char *origin_file = NULL;
+                const CxSpan *origin = map
+                                          ? cx_macro_map_find(map, s2->name,
+                                                              &origin_file)
+                                          : NULL;
                 if (origin) {
                     found = *origin;
+                    found_file = origin_file ? origin_file : uri;
                     have = 1;
                 } else if (s2->decl) {
                     found = s2->decl->span;

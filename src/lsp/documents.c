@@ -19,6 +19,8 @@ CxDocument *cx_doc_store_get(const char *uri) {
     return NULL;
 }
 
+CxDocument *cx_doc_store_all(void) { return g_docs; }
+
 CxDocument *cx_doc_store_put(const char *uri, const char *text, size_t len,
                              int version) {
     CxDocument *d = cx_doc_store_get(uri);

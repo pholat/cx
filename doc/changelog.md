@@ -660,3 +660,54 @@ Session log. Append a dated entry per session with the headline changes.
   status, and documented that traits are exercised in
   `macro_requires.cx`, `traits_macro.cx`, `traits_make_total.cx` and
   `std_vec.hx`.
+
+### Session 2026-11-09 (roadmap items 1, 4–6, 9-partial + macro-`gd` fix)
+
+* **Macro `gd` in imported `.hx` (Known issue).** `CxMacroMap` now records the
+  **definition file** for both macro invocations (`CxMacroInvoke.def_file`) and
+  generated names (`CxMacroOrigin.file`). The expander threads the defining
+  file through `collect_imports_from` → `scan_defs` → `Macro.file` →
+  `macro_invoke_add` / `macro_map_add`, and `definition.c` uses it for the
+  returned `Location.uri`. `Macro.file` is arena-owned (the import path lives in
+  a stack buffer at collection time, so a raw pointer produced garbage URIs).
+  `gd` on `define_list!` / `define_int_map!` in an importing `.cx` now jumps
+  into `std_list.hx` / `std_map.hx`.
+* **Chained and computed receivers (roadmap item 1).** `src/sema/symbols.c`
+  gained `expr_type` (identifiers, calls, method-call return types,
+  field/arrow members, subscripts, parens, casts, binary/ternary) and
+  `resolve_receivers` now resolves the receiver **first**, so `a.b().c()`,
+  `make().m()` and `arr[i].m()` lower to the associated calls.
+* **Local receiver type in the LSP.** `cx_sema_receiver_type` now walks the
+  enclosing body's top-level statements individually instead of passing the body
+  block to `collect_visible`, which popped the body's own locals on exit. As a
+  result `.`-completion / hover / `gd` resolve **locals** again (e.g. `out.`
+  offers `get` rather than the general list showing `Outer__get`).
+* **Computed-receiver completion.** `cx_lsp_computed_receiver_base` reparses a
+  repaired copy (`recv.__cx_comp();`) and types the receiver expression via the
+  new `cx_sema_expr_type` (a wrapper over the sema `expr_type`), so
+  `out.get().` offers `value` (the members of `Inner`) instead of the general
+  list.
+* **Trait associated types (roadmap item 2) — paused.** A `type Item;` member
+  was prototyped but removed again: it has little value while traits are
+  method-only. The idea now lives under *Considered extensions* in the roadmap.
+  Traits remain functions-only.
+* **Cross-file references / rename (roadmap item 4).** `references` and
+  `rename` now also scan every **open** document (`cx_doc_store_all`), producing
+  a multi-file `changes` map. Scope is open documents only and the match stays
+  lexical (binding-aware rename is still future work).
+* **`for!` over containers (roadmap item 5).** New `tests/golden/std_iter.hx`
+  ships a `for_each!` macro that lowers to an indexed loop over `.len()` /
+  `.at(i)`. The element local is declared with **`auto`** (inferred from
+  `.at`), so the invocation is `for_each!(x, list, { … })` with no type
+  argument; `std_iter_demo.cx` exercises it.
+* **More macro fragments + nested repetitions (roadmap item 6).** `$x:block`
+  (a balanced `{ … }`) and `$x:item` (a balanced group, or a `;`-terminated
+  run) are supported. Repetition captures now carry an **index path**, so
+  `$( $( … )* )*` matches and transcribes with the right per-iteration binding
+  (`MBind.paths`/`depths`, `MEnv.path`, path-aware `trans_count` / `bind_find`).
+* **LSP polish (roadmap item 9, partial).** `documentHighlight` now reports
+  read/write kinds (2/3, a lexical assignment-target heuristic) instead of a
+  flat `1`; hover leads **every** target with its `//` doc comment, not just
+  trait methods. `semanticTokens`, inlay hints, `positionEncoding`, workspace
+  symbols, call hierarchy and the `codeAction` remain pending.
+

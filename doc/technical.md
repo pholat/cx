@@ -200,10 +200,13 @@ Details:
 - `resolve_receivers` **lowers `.`/`->` method calls**: it keeps a
   **block-scoped** environment (parameters + locals, pushed/popped per block)
   and rewrites `recv.method(args)` whose receiver has a known struct type into
-  the associated call `Type__method(&recv, args)`. Constructor/destructor/
-  `implements` method bodies are walked with `self` bound to the enclosing
-  struct, and struct fields are kept out of the local scope. It runs between two
-  `infer_auto` passes (a silent one first, a reporting one after);
+  the associated call `Type__method(&recv, args)`. It resolves the receiver
+  **first**, and `expr_type` types chained/computed receivers (`a.b().c()`,
+  `make().m()`, `arr[i].m()`) from call return types, struct members and
+  subscripts, so those lower too. Constructor/destructor/`implements` method
+  bodies are walked with `self` bound to the enclosing struct, and struct fields
+  are kept out of the local scope. It runs between two `infer_auto` passes (a
+  silent one first, a reporting one after);
 - `check_macro_requires` verifies **checked `requires`**: for each binding the
   macro expander recorded on the TU (`CxMacroMap`), the required trait must
   exist, and then:
@@ -306,11 +309,16 @@ Read this before changing the grammar/lexer.
   statements.
 - **Macro expansion is a text pass before parsing** (`src/macro.c`). It
   tokenises the source, removes `macro_rules!` definitions, and substitutes
-  matching invocations; expansion is iterative (max 64 passes). `raw { … }`,
+  matching invocations; expansion is iterative (max 64 passes). Fragments are
+  `ident`/`field`, `tt`, `item` (a balanced group or `;`-terminated run),
+  `block` (a `{ … }`), `lit`, `path`, `method`, `ty`, `expr`, `stmt`.
+  Repetitions capture an **index path** (`MBind.paths`/`depths`, `MEnv.path`) so
+  nested `$( $( … )* )*` transcribes the right per-iteration binding. `raw { … }`,
   preprocessor lines and `#[…]` attributes are opaque to the expander. The
   expander records generated-name origins and invocation sites in a
-  `CxMacroMap` on the TU. Consequences and limits are documented in
-  [`macro-rules.md`](./macro-rules.md) §3–§4.
+  `CxMacroMap` on the TU, **including the defining file** (so `gd` on an
+  invocation of an imported macro lands in the importing module). Consequences
+  and limits are documented in [`macro-rules.md`](./macro-rules.md) §3–§4.
 - Bison blocks are written for **GNU Bison 3.8**; the parser is pure/reentrant
   and the scanner is `reentrant bison-bridge bison-locations`.
 - In the Neovim syntax file, `~` must be escaped (`\~`) — `~` is the
