@@ -1,5 +1,7 @@
 # Cx — a thin extension over C (namespaces · RAII · traits · macros)
 
+[-> lousy excuses why it happened <- ](./doc/human-thoughts-behind.md)
+
 Cx transpiles `.cx` / `.hx` sources to **portable C** that any normal toolchain
 (GCC, Clang, `arm-none-eabi-gcc`) compiles, using
 `__attribute__((cleanup))` for RAII. It adds namespaces, C++-style
