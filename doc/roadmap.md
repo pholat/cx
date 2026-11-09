@@ -17,10 +17,11 @@ Implemented: **C interop** (`raw { … }`, `#include`, `NAME!(…)` passthrough)
 **`macro_rules!`** (item/statement/expression position, repetitions incl.
 **nested**, `##`, `requires`, `$x:method`, `$x:block` / `$x:item`, imports),
 **checked trait requirements** (structs, primitives, function/method bindings),
-the **paired `.hx`/`.cx` model**, **`auto` return types**, **`.`/`->` method
-calls** (receiver-type tracking, **chained and computed receivers**), the
+the **paired `.hx`/`.cx` model**, **`auto` return types**, **multiple value
+unpacking** (`auto [a, b] = f();`, `auto [a, c] = f()=>[a, c];`), **`.`/`->`
+method calls** (receiver-type tracking, **chained and computed receivers**), the
 **klib-backed container layer** (`std_*.hx` modules, owning variants, teardown,
-**`std_iter.hx` `for_each!`**), **macros across `import` boundaries**,
+**`std/std.hx` `for!`**), **macros across `import` boundaries**,
 **`do…while`** and the **conditional `?:`**, and the **LSP**
 navigation/hover/completion/signature/occurrence features (read/write highlight
 kinds, doc comments on hover, cross-open-document references/rename).
@@ -37,9 +38,9 @@ is in **Refinement** below.
 | --: | :-- | :-- |
 | 1 | **Macro hygiene** (fresh-name renaming) and **non-greedy fragments** (so `($k:expr => $v:expr)` can be written). | Macro system |
 | 2 | **Doc comments on macro definitions** (`/// …`) for hover, and **LSP indexing of macro definitions**. | Macro system |
-| 3 | **More traits**: supertraits and default method bodies; postfix vtable calls (`x.T->m(a)` / `x.m(a)`); derived/blanket implementations; receiver forms other than `self`. | Traits |
+| 3 | **Default method bodies** (`trait X { int f(self) { … } }`). | Traits |
 | 4 | **LSP polish (remaining)**: binding-aware `rename`; on-disk workspace indexing; `semanticTokens`; inlay hints; `codeAction` "implement missing trait method"; `positionEncoding` (UTF-16 columns); workspace symbols; call hierarchy. | LSP |
-| 5 | **Language surface**: the comma operator; `static`/`extern`/`inline` specifiers; array types; **multiple value return/unpacking** (`(a, b) = f();`); **scoped imports**; `defer`. | Language surface |
+| 5 | **Language surface**: the comma operator; `static`/`extern`/`inline` specifiers; array types; **scoped imports**; `defer`. | Language surface |
 | 6 | **Tooling / infrastructure**: a **compile database** (`compile_commands.json`); **golden-output tests** (diff the generated C, not just "does it compile") plus fuzzing; `#line`/debug-info polish and a CI target; **paired `.hx`/`.cx` follow-ups** (out-of-line ctor/dtor definitions and `.c`-only helper prototypes). | Tooling |
 | 7 | **Considered extensions (not committed)** — see the section at the end. | Extensions |
 | 8 | **Struct-keyed maps** (user-supplied hash/equal pair) and a real **capacity/growth policy** for the container layer; then a `std` overview. | Containers / stdlib |
@@ -53,11 +54,6 @@ is in **Refinement** below.
   (which need a user hash/equal pair) and a real capacity/growth policy.
   `requires` bounds on primitives are checked against the built-in capability
   traits (`Hashable`, `Equatable`, `Comparable`, `Ordered`).
-- **Infer the trait from the object** — generate `($x).<Trait>::<member>` from a
-  `requires $x: A + B` clause so the call site can be `both_total!($x)`, with
-  `A::a` reserved for ambiguous cases.
-- **Dedicated `for!` loop syntax** over the `len`/`at` protocol (the
-  `for_each!` macro landed in `std_iter.hx`).
 
 ### Macro system
 
@@ -72,13 +68,7 @@ is in **Refinement** below.
 
 ### Traits
 
-- **Supertraits and default method bodies**
-  (`trait X: A + B { int f(self) { … } }`).
-- **Postfix vtable calls** (`x.T->m(a)` / `x.m(a)`) — removes the
-  function-pointer-local boilerplate.
-- **Derived/blanket implementations** (e.g. auto-`Equatable` for POD structs).
-- **Receiver forms other than `self`** (`&self`, `self_`), which interacts with
-  move semantics.
+- **Default method bodies** (`trait X { int f(self) { … } }`).
 
 ### LSP
 
@@ -92,8 +82,6 @@ is in **Refinement** below.
 ### Language surface (also see `required-features.md`)
 
 - The comma operator, `static`/`extern`/`inline` specifiers, array types.
-- **Multiple value return/unpacking** (`(a, b) = f();`) — lowering to a struct
-  return plus per-field unpacking.
 - **Scoped imports** (names only for a scope).
 - `defer`.
 
@@ -111,12 +99,6 @@ is in **Refinement** below.
 
 ## Considered extensions (not committed)
 
-- **Multiple value return and unpacking** — return and destructure several
-  values, e.g. `(a, b) = f();` or `a, b := f();`. A natural lowering is a struct
-  return plus per-field unpacking. For the struct form, something like
-  `a,b := struc_sub[field-name, field-name]` collides with standard `[]`
-  unpacking, so a spelling such as `a,b := struc_sub=>[field-name, field-name]`
-  is more attractive.
 - **Scoped imports** — an `import` that introduces names only for a scope
   (block / function / namespace) instead of file-wide.
 - **Compile database (`compile_commands.json`)** — emit include paths, flags and
@@ -145,4 +127,9 @@ is in **Refinement** below.
   Paused for now: a trait's members are method signatures only. It would let
   generic containers name an element type without a macro parameter, but needs
   per-implementation materialisation and `requires` checking.
+- **Postfix vtable calls** (`x.T->m(a)` / `x.m(a)`) — removes the
+  function-pointer-local boilerplate.
+- **Derived/blanket implementations** (e.g. auto-`Equatable` for POD structs).
+- **Receiver forms other than `self`** (`&self`, `self_`), which interacts with
+  move semantics.
 

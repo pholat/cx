@@ -10,11 +10,13 @@ trap 'rm -rf "$tmp"' EXIT
 
 [ -x "$cx" ] || { echo "cx binary not found; run 'make' first" >&2; exit 1; }
 
-# Headers first.
-for src in "$root"/tests/golden/*.hx; do
+# Headers first (top-level and `std/` subdirectory).
+for src in "$root"/tests/golden/*.hx "$root"/tests/golden/std/*.hx; do
     [ -e "$src" ] || continue
-    name=$(basename "$src" .hx)
+    rel=${src#"$root/tests/golden/"}
+    name=${rel%.hx}
     echo "== $name (header)"
+    mkdir -p "$tmp/$(dirname "$name")"
     "$cx" build "$src" -o "$tmp/$name.h"
     ${CC:-cc} -std=gnu11 -Wall -Wextra -I"$tmp" -I"$root/submodules/klib" \
         -fsyntax-only -x c "$tmp/$name.h"

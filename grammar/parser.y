@@ -61,7 +61,7 @@ void yyerror(YYLTYPE *locp, CxParseCtx *ctx, void *scanner, const char *msg);
 %token NAMESPACE STRUCT RETURN SCOPE ARROW
 %token IF ELSE WHILE DO FOR BREAK CONTINUE SIZEOF SWITCH CASE DEFAULT GOTO AUTO
 %token TYPEDEF IMPORT TRAIT IMPLEMENTS SELF
-%token EQ NE LE GE ANDAND OROR
+%token EQ NE LE GE ANDAND OROR FATARROW
 %token INC DEC PLUSEQ MINUSEQ STAREQ SLASHEQ PERCENTEQ SHL SHR
 
 %type <node> translation_unit external_decl namespace_decl struct_decl
@@ -73,7 +73,7 @@ void yyerror(YYLTYPE *locp, CxParseCtx *ctx, void *scanner, const char *msg);
 %type <str>  type namespace_path
 %type <vec>  struct_members stmt_list param_list arg_list ctor_args fp_param_list
 %type <vec>  one_decl_list trait_members trait_param_list impl_members
-%type <vec>  impl_param_list attributes
+%type <vec>  impl_param_list attributes unpack_names
 
 %right '=' PLUSEQ MINUSEQ STAREQ SLASHEQ PERCENTEQ
 %right '?'
@@ -430,6 +430,27 @@ stmt:
         { $$ = MK(CX_NODE_GOTO, (@$)); $$->name = $2; }
     | raw_block
     | macro_stmt
+    /* Multiple value unpacking: `auto [a, b] = f();` (first fields, in order)
+     * and `auto [a, c] = f()=>[a, c];` (fields by name). Lowered in sema to a
+     * temporary plus one typed declaration per target. */
+    | AUTO '[' unpack_names ']' '=' expr ';'
+        { $$ = MK(CX_NODE_UNPACK, (@$)); $$->type = "auto";
+          $$->children = $3; $$->init = $6; }
+    | AUTO '[' unpack_names ']' '=' expr FATARROW '[' unpack_names ']' ';'
+        { $$ = MK(CX_NODE_UNPACK, (@$)); $$->type = "auto";
+          $$->children = $3; $$->init = $6; $$->params = $9; }
+    ;
+
+/* A comma-separated list of identifiers (unpack targets or field names). */
+unpack_names:
+      IDENT
+        { $$ = cx_vec_empty();
+          CxNode *d = MK(CX_NODE_EMPTY, (@1)); d->name = $1;
+          cx_vec_push(ctx->arena, &$$, d); }
+    | unpack_names ',' IDENT
+        { $$ = $1;
+          CxNode *d = MK(CX_NODE_EMPTY, (@3)); d->name = $3;
+          cx_vec_push(ctx->arena, &$$, d); }
     ;
 
 expr_stmt:

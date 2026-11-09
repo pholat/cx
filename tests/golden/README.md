@@ -7,7 +7,8 @@ compiled by the host compiler (`$CC`, default `cc`). This proves the round trip
 `*.hx` files are transpiled to headers and `-fsyntax-only`-checked first (so
 importing sources can `#include` them), and `*.fail.cx` files are negative
 tests: `cx build` must fail with a conformance diagnostic. The `std_*.hx` files
-are reusable `macro_rules!` container modules.
+are reusable `macro_rules!` container modules; `std/std.hx` is the std catalog
+(the `for!` lowering).
 
 Run them with:
 

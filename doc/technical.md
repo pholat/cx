@@ -207,6 +207,11 @@ Details:
   bodies are walked with `self` bound to the enclosing struct, and struct fields
   are kept out of the local scope. It runs between two `infer_auto` passes (a
   silent one first, a reporting one after);
+- `lower_unpack` (called from `resolve_receivers`) rewrites a `CX_NODE_UNPACK`
+  (`auto [a, b] = expr;` / `auto [a, c] = expr=>[a, c];`) into a block: a
+  temporary of the source struct plus one typed declaration per target. The
+  source type comes from `expr_type` (so locals/params work); positional targets
+  take fields in declaration order, `=>[…]` selects by name;
 - `check_macro_requires` verifies **checked `requires`**: for each binding the
   macro expander recorded on the TU (`CxMacroMap`), the required trait must
   exist, and then:

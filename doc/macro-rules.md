@@ -207,8 +207,9 @@ instantiations. The user-facing container layer now ships as module files:
   `define_str_set!`
 - `tests/golden/std_vec.hx` — element-typed `define_vec!` with
   `requires $t: Drop`
-- `tests/golden/std_iter.hx` — `for_each!` (the `for`-over-containers lowering
-  over `.len()` / `.at(i)`, element type via `auto`)
+- `tests/golden/std/std.hx` — the std catalog; `for!` (the
+  `for`-over-containers lowering over `.len()` / `.at(i)`, element type via
+  `auto`)
 - `tests/golden/std_drop.hx` — the `Drop` interface
 - `tests/golden/std_demo.cx`, `std_owned_demo.cx`, `std_str_demo.cx`,
   `std_iter_demo.cx` — examples

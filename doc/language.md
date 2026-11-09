@@ -112,6 +112,10 @@ void Buf__dtor(struct Buf *self);
   callers — including `auto` at the call site — see the resolved type. Inference
   is conservative: a returned local cannot be inferred (locals are not in the
   symbol table).
+- **Multiple value unpacking**: `auto [a, b] = f();` declares `a` and `b` from
+  the struct `f` returns, taking the fields in declaration order; `auto [a, c] =
+  f()=>[a, c];` selects fields by name. It lowers to a temporary of the returned
+  struct plus one typed declaration per target (`<FieldType> a = tmp.<field>;`).
 - A bare identifier that names a function is emitted with its mangled name, so
   Cx functions can be passed as callbacks.
 
@@ -258,6 +262,8 @@ static const struct Iterable__vtable Row__Iterable__table = { … };
 - Conformance is **explicit and static**: sema checks that every required method
   is present with a matching signature (the `self` receiver is ignored). No
   structural/duck typing, no inheritance, no class vtables.
+- A trait declares **method signatures only** — no associated types/constants
+  and no supertraits (those are considered extensions).
 - There is no postfix-call syntax yet, so reaching the table uses a
   function-pointer local: `int (*len)(void *) = r.T; len(&r);`.
 
@@ -334,8 +340,9 @@ define_pair!(Point2, int);
   (recursively, cycle-bounded).
 - Trait members are reached in a transcription through the field named after the
   trait: `($x).Iterable->len`.
-- Not implemented: hygiene, a fully backtracking matcher, nested repetitions,
-  `$x:block` / `$x:item`, and LSP indexing of macro definitions.
+- The std catalog module `std/std.hx` provides `for!`: a `for`-over-containers
+  lowering over `.len()` / `.at(i)` that binds each element with `auto`
+  (`for!(x, seq, { … })`).
 
 Full reference: [`macro-rules.md`](./macro-rules.md).
 
@@ -355,7 +362,8 @@ A `.cx` can pull in another module with `import "mod.hx";`:
 - the generated C gets `#include "mod.h"`.
 
 Imports are declaration-only. Paths resolve relative to the importing file;
-cycles are skipped.
+cycles are skipped. Modules may live in subdirectories — `import "std/std.hx";`
+generates `#include "std/std.h"`.
 
 **Paired `.hx`/`.cx` model.** When a `.cx` is built and a sibling `.hx` with the
 same basename exists (`foo.cx` ⇄ `foo.hx`), the transpiler pairs them: the

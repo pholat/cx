@@ -186,6 +186,7 @@ IDENT   [A-Za-z_][A-Za-z0-9_]*
 "!="                        { return NE; }
 "<="                        { return LE; }
 ">="                        { return GE; }
+"=>"                        { return FATARROW; }
 "->"                        { return ARROW; }
 "::"                        { return SCOPE; }
 ":"                         { return ':'; }

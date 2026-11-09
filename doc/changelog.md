@@ -695,16 +695,21 @@ Session log. Append a dated entry per session with the headline changes.
   `rename` now also scan every **open** document (`cx_doc_store_all`), producing
   a multi-file `changes` map. Scope is open documents only and the match stays
   lexical (binding-aware rename is still future work).
-* **`for!` over containers (roadmap item 5).** New `tests/golden/std_iter.hx`
-  ships a `for_each!` macro that lowers to an indexed loop over `.len()` /
-  `.at(i)`. The element local is declared with **`auto`** (inferred from
-  `.at`), so the invocation is `for_each!(x, list, { … })` with no type
-  argument; `std_iter_demo.cx` exercises it.
+* **`for!` over containers (roadmap item 5).** New `tests/golden/std/std.hx`
+  is the std catalog; it ships a `for!` macro that lowers to an indexed loop
+  over `.len()` / `.at(i)`. The element local is declared with **`auto`**
+  (inferred from `.at`), so the invocation is `for!(x, list, { … })` with no
+  type argument; `std_iter_demo.cx` imports the catalog and exercises it.
 * **More macro fragments + nested repetitions (roadmap item 6).** `$x:block`
   (a balanced `{ … }`) and `$x:item` (a balanced group, or a `;`-terminated
   run) are supported. Repetition captures now carry an **index path**, so
   `$( $( … )* )*` matches and transcribes with the right per-iteration binding
   (`MBind.paths`/`depths`, `MEnv.path`, path-aware `trans_count` / `bind_find`).
+* **Multiple value unpacking.** `auto [a, b] = f();` (fields in declaration
+  order) and `auto [a, c] = f()=>[a, c];` (fields by name) parse as
+  `CX_NODE_UNPACK`; sema's `lower_unpack` types the source with `expr_type` and
+  rewrites the statement into a temporary plus one typed declaration per target.
+  `tests/golden/unpack.cx` exercises both. The lexer now has a `=>` token.
 * **LSP polish (roadmap item 9, partial).** `documentHighlight` now reports
   read/write kinds (2/3, a lexical assignment-target heuristic) instead of a
   flat `1`; hover leads **every** target with its `//` doc comment, not just

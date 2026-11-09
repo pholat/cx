@@ -66,6 +66,8 @@ typedef enum {
     CX_NODE_IMPLEMENTS,   /* `implements T { … }` inside a struct */
     CX_NODE_IMPL_METHOD,  /* method body provided by an implements block */
     CX_NODE_ATTR,         /* `#[name(args)]`: name=attr, type=verbatim args */
+    CX_NODE_UNPACK,       /* `auto [a, b] = expr;` / `... = s=>[f1, f2];`
+                           * children = targets, params = fields, init = source */
     CX_NODE_ERROR
 } CxNodeKind;
 

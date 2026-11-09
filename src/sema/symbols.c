@@ -517,6 +517,111 @@ static const char *expr_type(BuildCtx *c, Scope *s, CxNode *e) {
     }
 }
 
+/* Lower `auto [a, b] = expr;` / `auto [a, c] = expr=>[a, c];` into a list of
+ * declarations:
+ *   <Struct> __cx_unpack_L_C = expr;
+ *   <FieldType> a = __cx_unpack_L_C.<field>;
+ *   ...
+ * `resolve_receivers` supplies the block-scoped environment used to type
+ * `expr` and splices the result into the enclosing block (so the targets stay
+ * visible to the following statements). */
+static CxVec lower_unpack(BuildCtx *c, Scope *s, CxNode *n) {
+    CxSpan span = n->span;
+    CxVec none = cx_vec_empty();
+    const char *stype = expr_type(c, s, n->init);
+    char base[128];
+    CxSymbol *st = NULL;
+    if (stype) {
+        type_base(stype, base, sizeof base);
+        st = cx_sema_find_struct(c->table, base);
+    }
+    if (!st || !st->decl) {
+        cx_error(c->diags, span,
+                 "cannot unpack: the value is not a known struct");
+        return none;
+    }
+
+    int is_ptr = strchr(stype, '*') != NULL;
+    char *tmp = cx_arena_printf(c->arena, "__cx_unpack_%d_%d", span.first_line,
+                                span.first_column);
+    CxNode *td = cx_node_new(c->arena, CX_NODE_EMPTY, span);
+    td->name = tmp;
+    td->init = n->init;
+    CxNode *temp = cx_node_new(c->arena, CX_NODE_VAR_DECL, span);
+    temp->type = (char *)stype;
+    cx_vec_push(c->arena, &temp->children, td);
+
+    CxVec out = cx_vec_empty();
+    cx_vec_push(c->arena, &out, temp);
+
+    CxNode *decl = st->decl;
+    int want = n->children.len;
+    int explicit_fields = n->params.len > 0;
+
+    for (int i = 0; i < want; i++) {
+        CxNode *target = n->children.items[i];
+        const char *fname = NULL;
+        const char *ftype = NULL;
+
+        if (explicit_fields) {
+            if (i < n->params.len && n->params.items[i]->name) {
+                fname = n->params.items[i]->name;
+                for (int k = 0; decl && k < decl->children.len && !ftype; k++) {
+                    CxNode *m = decl->children.items[k];
+                    if (m->kind != CX_NODE_VAR_DECL) continue;
+                    for (int q = 0; q < m->children.len; q++) {
+                        CxNode *d = m->children.items[q];
+                        if (d->name && !strcmp(d->name, fname)) {
+                            ftype = m->type;
+                            break;
+                        }
+                    }
+                }
+            }
+        } else {
+            /* positional: the i-th declared field, in declaration order */
+            int idx = 0;
+            for (int k = 0; decl && k < decl->children.len && !ftype; k++) {
+                CxNode *m = decl->children.items[k];
+                if (m->kind != CX_NODE_VAR_DECL) continue;
+                for (int q = 0; q < m->children.len; q++) {
+                    CxNode *d = m->children.items[q];
+                    if (idx == i) {
+                        fname = d->name;
+                        ftype = m->type;
+                        break;
+                    }
+                    idx++;
+                }
+            }
+        }
+
+        if (!fname || !ftype) {
+            cx_error(c->diags, target->span,
+                     "cannot unpack field %d of '%s'", i + 1, st->name);
+            continue;
+        }
+
+        CxNode *rid = cx_node_new(c->arena, CX_NODE_EXPR_IDENT, target->span);
+        rid->name = tmp;
+        CxNode *field = cx_node_new(
+            c->arena, is_ptr ? CX_NODE_EXPR_ARROW : CX_NODE_EXPR_FIELD,
+            target->span);
+        field->lhs = rid;
+        field->name = (char *)fname;
+
+        CxNode *vd = cx_node_new(c->arena, CX_NODE_VAR_DECL, target->span);
+        vd->type = (char *)ftype;
+        CxNode *d = cx_node_new(c->arena, CX_NODE_EMPTY, target->span);
+        d->name = target->name;
+        d->init = field;
+        cx_vec_push(c->arena, &vd->children, d);
+        cx_vec_push(c->arena, &out, vd);
+    }
+
+    return out;
+}
+
 /* Walk a method-like body (constructor/destructor/`implements` method) with
  * `self` bound to the enclosing struct's type (`<Struct> *`, since the emitter
  * binds the receiver as a pointer) and the declared parameters in scope. */
@@ -546,6 +651,17 @@ static void walk_method_body(BuildCtx *c, Scope *s, CxNode *m,
 static void resolve_receivers(BuildCtx *c, Scope *s, CxNode *n) {
     if (!n) return;
 
+    if (n->kind == CX_NODE_UNPACK) {
+        /* Non-block statement position (e.g. an `if` body): wrap the lowered
+         * declarations so they stay scoped to that statement. Direct block
+         * children are spliced below so their targets remain visible after. */
+        CxVec stmts = lower_unpack(c, s, n);
+        n->kind = CX_NODE_BLOCK;
+        n->children = stmts;
+        n->init = NULL;
+        n->params = cx_vec_empty();
+    }
+
     if (n->kind == CX_NODE_STRUCT) {
         /* Fields must not leak into the local scope; only the method bodies are
          * walked, with `self` bound. */
@@ -571,10 +687,26 @@ static void resolve_receivers(BuildCtx *c, Scope *s, CxNode *n) {
     if (n->kind == CX_NODE_BLOCK) {
         /* Block scope: locals declared here (or in a nested block) are popped
          * on exit, so an inner declaration shadowing an outer one does not leak
-         * past its block. */
+         * past its block. An unpack statement is spliced into this block so its
+         * targets are visible to the following statements. */
         int save = s->len;
-        for (int i = 0; i < n->children.len; i++)
-            resolve_receivers(c, s, n->children.items[i]);
+        CxVec out = cx_vec_empty();
+        int changed = 0;
+        for (int i = 0; i < n->children.len; i++) {
+            CxNode *ch = n->children.items[i];
+            if (ch->kind == CX_NODE_UNPACK) {
+                CxVec stmts = lower_unpack(c, s, ch);
+                for (int k = 0; k < stmts.len; k++) {
+                    cx_vec_push(c->arena, &out, stmts.items[k]);
+                    resolve_receivers(c, s, stmts.items[k]);
+                }
+                changed = 1;
+            } else {
+                cx_vec_push(c->arena, &out, ch);
+                resolve_receivers(c, s, ch);
+            }
+        }
+        if (changed) n->children = out;
         s->len = save;
         return;
     }

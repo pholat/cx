@@ -1,0 +1,38 @@
+// Multiple value unpacking.
+//
+//   auto [a, b] = f();              // first fields, in declaration order
+//   auto [a, c] = f()=>[a, c];      // fields selected by name
+//
+// Both lower to a temporary of the returned struct plus one typed declaration
+// per target (`<FieldType> a = tmp.<field>;`).
+struct Pair {
+    int x;
+    int y;
+};
+
+Pair make_pair(int a, int b) {
+    Pair p;
+    p.x = a;
+    p.y = b;
+    return p;
+}
+
+struct Triple {
+    int a;
+    int b;
+    int c;
+};
+
+Triple make_triple(int a, int b, int c) {
+    Triple t;
+    t.a = a;
+    t.b = b;
+    t.c = c;
+    return t;
+}
+
+int run() {
+    auto [x, y] = make_pair(1, 2);
+    auto [p, q] = make_triple(3, 4, 5)=>[a, c];
+    return x + y + p + q;
+}
