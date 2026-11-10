@@ -58,9 +58,11 @@ void yyerror(YYLTYPE *locp, CxParseCtx *ctx, void *scanner, const char *msg);
 %token <str> RAW
 %token <macro> MACRO
 %token <macro> ATTRIBUTE
+%token <macro> SM
 %token NAMESPACE STRUCT RETURN SCOPE ARROW
 %token IF ELSE WHILE DO FOR BREAK CONTINUE SIZEOF SWITCH CASE DEFAULT GOTO AUTO
 %token TYPEDEF IMPORT TRAIT IMPLEMENTS SELF
+%token ENUM CAST
 %token EQ NE LE GE ANDAND OROR FATARROW
 %token INC DEC PLUSEQ MINUSEQ STAREQ SLASHEQ PERCENTEQ SHL SHR
 
@@ -70,10 +72,12 @@ void yyerror(YYLTYPE *locp, CxParseCtx *ctx, void *scanner, const char *msg);
 %type <node> typedef_decl one_decl import_decl
 %type <node> raw_block macro_stmt trait_decl trait_member
 %type <node> implements_block impl_member
-%type <str>  type namespace_path
+%type <node> enum_decl enum_member sm_block enum_str_decl
+%type <str>  type namespace_path cast_type
 %type <vec>  struct_members stmt_list param_list arg_list ctor_args fp_param_list
 %type <vec>  one_decl_list trait_members trait_param_list impl_members
 %type <vec>  impl_param_list attributes unpack_names
+%type <vec>  enum_members enum_member_list
 
 %right '=' PLUSEQ MINUSEQ STAREQ SLASHEQ PERCENTEQ
 %right '?'
@@ -131,6 +135,9 @@ external_decl:
     | function_decl
     | var_decl
     | trait_decl
+    | enum_decl       /* `enum E { A, B };` */
+    | enum_str_decl   /* `#[str] enum Machine::State;` */
+    | sm_block        /* `sm Name { … }` state machine */
     | raw_block       /* verbatim C at file scope, e.g. a macro instantiation */
     | macro_stmt      /* `NAME!( … );` C macro invocation passthrough */
     ;
@@ -151,6 +158,61 @@ raw_block:
 macro_stmt:
       MACRO ';'
         { $$ = MK(CX_NODE_MACRO, (@$)); $$->name = $1.name; $$->type = $1.args; }
+    ;
+
+/* --------------------------------------------------------------------- enums */
+
+/* `enum E { A, B = 2, C };` — a C enum. The name is registered as a type
+ * (mid-rule) so `E v;` lexes `E` as a type name. `#[str]` on the enum makes
+ * codegen emit a `E__c_str` switch returning each member's name. */
+enum_decl:
+      ENUM IDENT
+        { cx_typeset_add(&ctx->types, $2); }
+      '{' enum_members '}' ';'
+        { $$ = MK(CX_NODE_ENUM, (@$)); $$->name = $2; $$->children = $5; }
+    ;
+
+enum_members:
+      %empty
+        { $$ = cx_vec_empty(); }
+    | enum_member_list
+        { $$ = $1; }
+    | enum_member_list ','   /* trailing comma */
+        { $$ = $1; }
+    ;
+
+enum_member_list:
+      enum_member
+        { $$ = cx_vec_empty(); cx_vec_push(ctx->arena, &$$, $1); }
+    | enum_member_list ',' enum_member
+        { $$ = $1; cx_vec_push(ctx->arena, &$$, $3); }
+    ;
+
+enum_member:
+      IDENT
+        { $$ = MK(CX_NODE_EMPTY, (@$)); $$->name = $1; }
+    | IDENT '=' expr
+        { $$ = MK(CX_NODE_EMPTY, (@$)); $$->name = $1; $$->init = $3; }
+    ;
+
+/* `#[str] enum Machine::State;` — apply `#[str]` to an `sm` machine's generated
+ * state/event enum (`name` = the machine, `type` = "State" / "Event"). Codegen
+ * emits the `<M>__State__c_str` / `<M>__Event__c_str` helpers at this point. */
+enum_str_decl:
+      ENUM TYPE_NAME SCOPE IDENT ';'
+        { $$ = MK(CX_NODE_ENUM_STR, (@$)); $$->name = $2; $$->type = $4; }
+    ;
+
+/* --------------------------------------------------------------- state machine */
+
+/* `sm Name { … }`: the lexer captures the machine name and the verbatim
+ * transition body; codegen expands it into enums, a struct and the
+ * `init`/`process_event`/`reset`/`get_state` functions. The name is registered
+ * as a type (mid-rule) so `Name m;` is a valid declaration. */
+sm_block:
+      SM semi_opt
+        { cx_typeset_add(&ctx->types, $1.name);
+          $$ = MK(CX_NODE_FSM, (@$)); $$->name = $1.name; $$->type = $1.args; }
     ;
 
 /* --------------------------------------------------------------------- traits */
@@ -348,6 +410,21 @@ type:
     | AUTO         { $$ = "auto"; } /* inferred in the semantic pass */
     | type '*'     { $$ = cx_arena_printf(ctx->arena, "%s *", $1); }
     | type TYPE_NAME { $$ = cx_arena_printf(ctx->arena, "%s %s", $1, $2); }
+    /* `Type::sub` — a Cx-qualified type (e.g. an `sm` machine's generated
+     * enums: `Machine::State` / `Machine::Event`); lowers to `Type__sub`. */
+    | TYPE_NAME SCOPE IDENT
+        { $$ = cx_arena_printf(ctx->arena, "%s__%s", $1, $3); }
+    ;
+
+/* A cast/`sizeof` type. Deliberately *excludes* the qualified `Type::sub` form
+ * so that `(T)` in the shared `'('` state stays unambiguous against the
+ * parenthesised-expression rule `'(' expr ')'` (`Type::sub` is also an
+ * expression). Cast to a qualified type with `cast[T](x)`. */
+cast_type:
+      TYPE_NAME    { $$ = $1; }
+    | AUTO         { $$ = "auto"; }
+    | cast_type '*'     { $$ = cx_arena_printf(ctx->arena, "%s *", $1); }
+    | cast_type TYPE_NAME { $$ = cx_arena_printf(ctx->arena, "%s %s", $1, $2); }
     ;
 
 var_decl:
@@ -477,6 +554,20 @@ expr:
         { $$ = MK(CX_NODE_EXPR_CALL, (@$));
           $$->name = cx_arena_printf(ctx->arena, "%s__%s", $1, $3);
           $$->children = $5; }
+    /* `Type::member` without a call — a generated name (e.g. an enum member or
+     * a container constant); lowers to the `Type__member` identifier. */
+    | TYPE_NAME SCOPE IDENT
+        { $$ = MK(CX_NODE_EXPR_IDENT, (@$));
+          $$->name = cx_arena_printf(ctx->arena, "%s__%s", $1, $3); }
+    /* `Type::sub::member` — a two-level generated name (`Type__sub__member`),
+     * e.g. the event constants of an `sm` machine: `Machine::event::start`. */
+    | TYPE_NAME SCOPE IDENT SCOPE IDENT
+        { $$ = MK(CX_NODE_EXPR_IDENT, (@$));
+          $$->name = cx_arena_printf(ctx->arena, "%s__%s__%s", $1, $3, $5); }
+    | TYPE_NAME SCOPE IDENT SCOPE IDENT '(' arg_list ')'
+        { $$ = MK(CX_NODE_EXPR_CALL, (@$));
+          $$->name = cx_arena_printf(ctx->arena, "%s__%s__%s", $1, $3, $5);
+          $$->children = $7; }
     | '(' expr ')'
         { $$ = MK(CX_NODE_EXPR_PAREN, (@$)); $$->lhs = $2; }
     | expr '.' IDENT
@@ -541,9 +632,12 @@ expr:
           $$->type = "->"; $$->children = $5; }
     | expr '[' expr ']'
         { $$ = MK(CX_NODE_EXPR_INDEX, (@$)); $$->lhs = $1; $$->rhs = $3; }
-    | '(' type ')' expr %prec UDEREF
+    | '(' cast_type ')' expr %prec UDEREF
         { $$ = MK(CX_NODE_EXPR_CAST, (@$)); $$->type = $2; $$->lhs = $4; }
-    | SIZEOF '(' type ')' %prec SIZEOF
+    /* `cast[T](expr)` — readable sugar for the C cast `(T)expr`. */
+    | CAST '[' type ']' '(' expr ')'
+        { $$ = MK(CX_NODE_EXPR_CAST, (@$)); $$->type = $3; $$->lhs = $6; }
+    | SIZEOF '(' cast_type ')' %prec SIZEOF
         { $$ = MK(CX_NODE_EXPR_SIZEOF, (@$)); $$->type = $3; }
     | SIZEOF expr
         { $$ = MK(CX_NODE_EXPR_SIZEOF, (@$)); $$->lhs = $2; }

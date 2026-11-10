@@ -1,0 +1,52 @@
+// Uses the `static_map.hx` macro module: a fixed-capacity map generated over
+// the `Hashable` / `Equatable` interfaces. The key type implements both; the
+// map stores eight slots and never allocates.
+import "std/static_map.hx";
+
+struct Key {
+    int id;
+
+    Key(int id_) {
+        id = id_;
+    }
+
+    implements Hashable {
+        int hash(self) {
+            return self->id;
+        }
+    }
+
+    implements Equatable {
+        int equals(self, void *other) {
+            Key *o = (Key *)other;
+            return self->id == o->id;
+        }
+    }
+};
+
+define_static_map!(KeyMap, Key, int, s0 s1 s2 s3);
+
+int run() {
+    KeyMap m;
+    m.clear();
+
+    Key a(1);
+    Key b(2);
+    Key c(3);
+
+    m.put(&a, 10);
+    m.put(&b, 20);
+    m.put(&c, 30);
+
+    int x = m.get(&a, 0);
+    int y = m.get(&b, 0);
+    int z = m.get(&c, 0);
+
+    int had = m.has(&b);
+    int n = m.size();
+
+    m.remove(&a);
+    int missing = m.get(&a, -1);
+
+    return x + y + z + had + n + missing;
+}

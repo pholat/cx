@@ -34,6 +34,8 @@ CxSymbol *cx_sema_lookup(const CxSymbolTable *table, const char *qualified);
 CxSymbol *cx_sema_find_struct(const CxSymbolTable *table, const char *name);
 CxSymbol *cx_sema_find_function(const CxSymbolTable *table, const char *name);
 CxSymbol *cx_sema_find_trait(const CxSymbolTable *table, const char *name);
+CxSymbol *cx_sema_find_enum(const CxSymbolTable *table, const char *name);
+CxSymbol *cx_sema_find_fsm(const CxSymbolTable *table, const char *name);
 CxSymbol *cx_sema_find_symbol(const CxSymbolTable *table, const char *name);
 
 /* The `CX_NODE_TRAIT_METHOD` node of `method` in trait `trait`, or NULL. Used by

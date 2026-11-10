@@ -22,9 +22,11 @@ unpacking** (`auto [a, b] = f();`, `auto [a, c] = f()=>[a, c];`), **`.`/`->`
 method calls** (receiver-type tracking, **chained and computed receivers**), the
 **klib-backed container layer** (`std_*.hx` modules, owning variants, teardown,
 **`std/std.hx` `for!`**), **macros across `import` boundaries**,
-**`do…while`** and the **conditional `?:`**, and the **LSP**
+**`do…while`** and the **conditional `?:`**, the **LSP**
 navigation/hover/completion/signature/occurrence features (read/write highlight
-kinds, doc comments on hover, cross-open-document references/rename).
+kinds, doc comments on hover, cross-open-document references/rename), plus
+**enums** with **`#[str]`**, **`cast[T](expr)`**, **`sm` state machines**, and a
+**`macro_rules!`-generated static map** (`std/static_map.hx`).
 
 For the dated details of any item, see [`changelog.md`](./changelog.md). This
 file keeps only what is **next**.
@@ -105,73 +107,9 @@ is in **Refinement** below.
   one entry per generated file so clangd and other C tooling resolve the
   transpiled output; could also help the Cx LSP discover module roots and import
   paths.
-- **Static map** — constant-size map up to *n* elements that uses the whole
-  required space but is always usable via index. Optional built-in length check.
-  Useful for typical switch-case table-dispatch scenarios.
 - **AVL/RB map** — for anything that provides an interface.
-- **`#[cast]` / `cast[type]`** — syntax sugar for a C cast, because the standard
-  C cast is not very readable. Consider an optional second parameter with a
-  compile-time check.
-- **FSM syntax** — `StateA -> StateB : Event [Guard] / Action`, generating:
-  1. an enum with states; 2. an enum with events; 3. an SM struct with guard
-  function pointers, action function pointers and a context pointer; 4. the SM
-  struct providing `process_event`, `reset`, `get_state`, `init`.
-  The sm accepts `[*]` as entry state.
-  The FSM has to support:
-  - events, guards, actions, parralel states and sub-states.
-  - parallel states will be defined with '|' before the state line, therefore line:
-    ```
-    | StateA -> StateB: Action1
-    | StateD -> StateG: Action2
-    ```
-    means two parallel states.
-    Sub-states can be defined with:
-    ```
-    StateA { 
-        StateB->StateC: Action1 
-        StateC->StateB: Action2
-    }
-    ```
-  - state machine will be detected similar to raw code block. it will start with ` sm { `
-  - state machine will be affedted by `namespace` - therefore a sm created in namespace
-    will have all it's elements affected with namespace.
-  - multiple guards can be passed via coma, result of coma separated guards is a
-    result of `guard1(...) && guard2(...) && ...` the if any guard in the chain fails
-    then next guard is not called ( which is typical && c behaviour )
-  - multiple actions can be passed coma separated
-  - the sm follows first element in transmission capture table rule
-  - comments can be added with `//`
-  - there is a set of non named state handlings:
-    - `[*]` default entry state
-    - `[any]` any entry state
-    - `[current]` current state captured "on the left of `->`
-    With that the user can:
-    - specify entry state with `[*]` 
-    - create a handling for unexpected events i.e. `[any] -> [current] / log_unexpected` 
-      at the end of sm definition will call log_unexpected if nothing else matched and
-      consumed the event
-  - guads and actions are given context with:
-    - entry event
-    - exit event
-    - user context registered
-  - events and guards are callbacks that need to be registered - if not registered
-    these are null and for guards it results in `false`, while for actions it results
-    in lack of call to the action
-  - complete sm example
-    ```
-    namespace test{
-      [*] -> playing : start / log_play, play
-      playing -> done : finish [can_stop] / log_stopped, stop
-      // This transmission will be done if previous wasn't executed
-      playing -> done : finish / log_wont_stop
-      Done -> [*] / log_done
-      [any] -> [current] / log_unexpected
-    }
-    ```
-- **`#[str]`** — automatically create a `c_str` function for an enum that
-  returns a static string per element via a `switch` (and `""` as fallback).
-- move semantics for real RAAI - but I've no idea how to make it plain c transpilable
-  at the moment.
+- **move semantics for real RAII** - but I've no idea how to make it plain c
+  transpilable at the moment.
 - c smartptr, in raw c it could possibly be done with double pointers and hepers
   calls on these.
 - **Trait associated types/constants** — `trait Iterable { type Item; … }` (and
@@ -184,4 +122,30 @@ is in **Refinement** below.
 - **Derived/blanket implementations** (e.g. auto-`Equatable` for POD structs).
 - **Receiver forms other than `self`** (`&self`, `self_`), which interacts with
   move semantics.
+- Codebase refactor:
+  **Split by feature and by concern.** Today one feature edits four big files (`c_emitter.c` ~1.7k lines, `macro.c` ~2k, `symbols.c` ~1.2k, plus grammar/LSP), so diffs and compiles stay large and regressions are easy.
+  
+  1. **Feature modules.** Give each new syntax its own `src/features/<name>/` with a parser hook, sema pass and emitter behind a small `feature.h` (`register/collect/emit`). FSM, enums, `#[str]`, `cast` each become ~100–300 self-contained lines instead of edits spread across the tree.
+  2. **Split `c_emitter.c`** into `emit_types`, `emit_expr`, `emit_stmt`, `emit_traits`, `emit_enum`, `emit_fsm` around a shared `Emit` struct in `c_emitter.h`; turn the five-phase `walk` into a registry of per-node emitters.
+  3. **Split `symbols.c`** into `collect.c`, `conform.c` (traits/`requires`), `receivers.c` (inference + method lowering), `diagnostics.c`.
+  4. **Split `macro.c`** into `macro_lex.c`, `macro_match.c`, `macro_transcribe.c`, `macro_driver.c` — the matcher and transcriber are independent and unit-testable.
+  5. **Grammar.** Group productions per feature, or move `sm`/`enum`/`cast` fragments into `%code` includes so `parser.y` stops growing monotonically.
+  6. **Tooling.** `tests/run_one.sh <file>` for a sub-second single-test loop, a `cx new-feature` scaffolder, and one shared LSP `query.c` position index.
+  
+Net: smaller diffs, faster incremental builds, parallel work, fewer cross-layer regressions.
+
+
+### Landed extensions — remaining follow-ups
+
+These shipped (see [`language.md`](./language.md) §16–§17 and
+[`changelog.md`](./changelog.md)); only the follow-ups remain:
+
+- **Static map** (`std/static_map.hx`) — add index access over the used slots
+  and an optional built-in length/full check. (Struct-keyed *dynamic* maps still
+  need the user-supplied hash/equal pair from ordered item 8.)
+- **`cast[T](expr)`** — an optional second parameter carrying a compile-time
+  check (e.g. a `sizeof` assertion).
+- **`sm` state machines** — real hierarchical/parallel semantics (currently
+  flattened), per-state entry/exit hooks, and the planned trait interfaces for
+  transitions. `#[str]` on an enum is complete.
 

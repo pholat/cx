@@ -142,6 +142,46 @@ static void walk(BuildCtx *c, CxNode *n, const char *ns, const char *file) {
         break;
     }
 
+    case CX_NODE_ENUM: {
+        /* An enum is a named type; codegen emits it as a `typedef enum …` and
+         * mangles the tag like a struct. `#[str]` adds a `c_str` function. */
+        CxSymbol *s = symbol_new(c->arena, n, ns, CX_NODE_ENUM, file);
+        table_push(c->table, s);
+        break;
+    }
+
+    case CX_NODE_FSM: {
+        /* A state machine: codegen expands the captured body into a struct and
+         * the `init`/`process_event`/`reset`/`get_state` functions. The symbol
+         * lets `emit_type` recognise the machine's type. */
+        CxSymbol *s = symbol_new(c->arena, n, ns, CX_NODE_FSM, file);
+        table_push(c->table, s);
+        /* Register the generated API as *function* symbols so `.`-method calls
+         * (`m.init(ctx)`, `m.process_event(ev)`, …) lower to the associated
+         * calls `Machine__init(&m, ctx)` etc. The C names are bare (no
+         * namespace), matching what `emit_fsm_*` emits; `get_state` returns the
+         * machine's `__State` enum (not an int). */
+        static const char *const methods[] = {"init", "reset", "get_state",
+                                              "process_event"};
+        for (int i = 0; i < 4; i++) {
+            CxSymbol *fn = (CxSymbol *)cx_arena_alloc(c->arena, sizeof(CxSymbol));
+            if (!fn) break;
+            memset(fn, 0, sizeof *fn);
+            fn->name = cx_arena_printf(c->arena, "%s__%s", n->name, methods[i]);
+            fn->ns = NULL;
+            fn->qualified = fn->name;
+            fn->type = (strcmp(methods[i], "get_state") == 0)
+                           ? cx_arena_printf(c->arena, "%s__State", n->name)
+                           : (char *)"void";
+            fn->kind = CX_NODE_FUNCTION;
+            fn->span = n->span;
+            fn->file = file;
+            fn->decl = n;
+            table_push(c->table, fn);
+        }
+        break;
+    }
+
     case CX_NODE_VAR_DECL: {
         CxSymbol *s = symbol_new(c->arena, n, ns, CX_NODE_VAR_DECL, file);
         table_push(c->table, s);
@@ -1113,6 +1153,14 @@ CxSymbol *cx_sema_find_function(const CxSymbolTable *t, const char *name) {
 
 CxSymbol *cx_sema_find_trait(const CxSymbolTable *t, const char *name) {
     return find_by_kind(t, name, CX_NODE_TRAIT);
+}
+
+CxSymbol *cx_sema_find_enum(const CxSymbolTable *t, const char *name) {
+    return find_by_kind(t, name, CX_NODE_ENUM);
+}
+
+CxSymbol *cx_sema_find_fsm(const CxSymbolTable *t, const char *name) {
+    return find_by_kind(t, name, CX_NODE_FSM);
 }
 
 CxNode *cx_sema_find_trait_method(const CxSymbolTable *t, const char *trait,

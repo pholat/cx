@@ -171,6 +171,21 @@ q->get_y();    // q is a Point *
   member type, element type, parentheses or cast. When the receiver type cannot
   be inferred the call is left verbatim.
 
+### `cast[T](expr)`
+
+```cxc
+int  n = cast[int](d);      // d is a double
+char *p = cast[char *](q);  // q is an int *
+```
+
+→ `int n = (int)d;`
+  `char *p = (char *)q;`
+
+- `cast[type](expr)` is readable sugar for the C cast `(T)expr`; it lowers to
+  the same `CX_NODE_EXPR_CAST`, so `auto` inference and receiver typing treat it
+  identically. (The `#[cast]` attribute spelling is not provided — attributes
+  attach to declarations, not expressions.)
+
 ## 6. Statements
 
 Expression statements, `return`, blocks, `if`/`else`, `while`,
@@ -388,11 +403,11 @@ definitions are emitted. The header is the single source of the type shape.
 
 ## 14. What is *not* an extension
 
-Cx accepts plain C declarations, statements and expressions (structs, typedefs,
-functions, `if`/`else`, `while`, `do … while`, `for`, `switch`/`case`/`default`,
-`goto`/labels, the conditional `?:`, casts, `sizeof`, pointer types, subscript
-`[]`, function-pointer declarators, …) without changing them. A few structural
-points:
+Cx accepts plain C declarations, statements and expressions (structs, enums,
+typedefs, functions, `if`/`else`, `while`, `do … while`, `for`,
+`switch`/`case`/`default`, `goto`/labels, the conditional `?:`, casts, `sizeof`,
+pointer types, subscript `[]`, function-pointer declarators, …) without changing
+them. A few structural points:
 
 - A `struct` / `typedef` declaration requires a trailing `;`.
 - A constructor/destructor is declared inside the struct; `#[ctor]` / `#[dtor]`
@@ -410,3 +425,115 @@ Cx-introduced keywords are **lowercase full words** — no abbreviations
 (`implements`, not `impl`; `function`, not `func`). Existing **C keywords** keep
 their C spelling (`return`, `struct`, `typedef`, `sizeof`, `const`, …), since C
 compatibility is a goal.
+
+## 16. Enums and `#[str]`
+
+```cxc
+#[str]
+enum Color {
+    Red,
+    Green = 4,
+    Blue,
+};
+
+const char *name(Color c) { return Color::c_str(c); }
+```
+
+→
+
+```c
+typedef enum Color { Color__Red, Color__Green = 4, Color__Blue } Color;
+const char *Color__c_str(Color v);   /* prototyped in phase 2 */
+```
+
+- An enum is `enum E { A, B = 2, … };`. Its name is registered as a type (so
+  `E v;` parses). Members are emitted with the *bare* enum name as a prefix
+  (`E__A`), so `E::A` (the `Type::member` spelling, lowered to `E__A`) resolves.
+- The C tag and typedef are namespace-mangled (`ns__E`) just like a struct, so
+  the enum can be used as a type in a namespace.
+- **`#[str]`** makes codegen emit `E__c_str(E v)`, a `switch` returning each
+  enumerator's spelling (`"Red"`, …) with a `""` fallback. It is a front-end
+  attribute, never emitted as a C attribute.
+
+## 17. State machines — `sm`
+
+```cxc
+sm Machine {
+    [*] -> playing : start / log_play
+    playing -> done : finish [can_stop] / log_stopped
+    playing -> done : finish / log_wont_stop   // fallback when the guard fails
+    done -> [*] / log_done
+    [any] -> [current] / log_unexpected
+}
+
+// opt in to the `c_str` name helpers for the generated enums
+#[str] enum Machine::State;
+#[str] enum Machine::Event;
+
+int  can_stop(Machine *m, Machine::State from, Machine::State to,
+              Machine::Event event) { return *(int *)m->ctx; }
+void log_play(Machine *m, Machine::State from, Machine::State to,
+              Machine::Event event) {
+    printf("%s -> %s (%s)\n", Machine::State::c_str(from),
+           Machine::State::c_str(to), Machine::Event::c_str(event));
+}
+
+int run() {
+    int allowed = 1;
+    Machine m;
+    m.init(&allowed);                 // lowers to Machine__init(&m, &allowed)
+    m.guard_can_stop = can_stop;      // guards/actions are assignable …
+    m.action_log_play = log_play;
+    m.process_event(Machine::event::start);   // … events are enum constants
+    return m.get_state();             // returns Machine::State
+}
+```
+
+A `sm Name { … }` block is captured verbatim (like `raw { … }`) and expanded by
+codegen. Generated C uses cx-style `__` sub-namespacing off the machine name:
+
+- `Name__State` / `Name__Event` enums; their values are
+  `Name__state__<s>` (incl. `Name__state__entry`) and `Name__event__<e>`. In Cx
+  the types are written with the qualified spelling `Name::State` / `Name::Event`
+  (and can be used in callback signatures); events as `Name::event::<e>`,
+  states as `Name::state::<s>`.
+- `#[str] enum Name::State;` / `#[str] enum Name::Event;` opt in to the `c_str`
+  name helpers, emitted after the machine declaration (before the functions):
+  `Name::State::c_str(v)` / `Name::Event::c_str(v)` return the state/event
+  spelling (e.g. `"playing"`), with `""` as a fallback. Without the marker no
+  helper is generated.
+- `Name__Guard` = `int (*)(Name *m, Name__State from, Name__State to,
+  Name__Event event)` and `Name__Action` = `void (*)(…)` with the same
+  parameters. A callback always receives the **typed** machine, the `from` state
+  (exited), the `to` state (entered) and the event — never bare integers. The
+  *user* context is the machine's `void *ctx` field (set by `init`).
+- `struct Name { Name__State state; void *ctx; Name__Guard guard_<g>; …;
+  Name__Action action_<a>; … };` — one field per guard/action, **no fields for
+  events** (events are enum constants and are not assignable).
+- `Name__init(&m, ctx)`, `Name__reset(&m)`, `Name__get_state(&m)` and
+  `Name__process_event(&m, event)` — the event is a `Name__Event` and
+  `get_state` returns a `Name__State` (not an `int`). All four are also reachable
+  as `.`-method calls (`m.init(ctx)`, `m.process_event(ev)`, `m.get_state()`).
+
+Transition syntax:
+
+- `Src -> Dst : Event [Guard1, Guard2] / Action1, Action2` — the event and the
+  guard/action lists are optional (`/` may be omitted).
+- `[*]` is the entry pseudo-state (`Name__state__entry`, the initial `state`);
+  `[any]` matches any state and is evaluated **last**, as a fallback;
+  `[current]` as a destination keeps the current state.
+- A state machine follows the **first matching transition** rule: transitions are
+  tried in definition order, and a failed guard chain falls through to the next.
+- A guard chain `g1, g2` requires `g1 && g1(m, event) && g2 && g2(m, event)` —
+  an **unregistered** (NULL) guard counts as `false`, so the transition does not
+  fire. Actions are called in order; an unregistered action is skipped.
+- A leading `|` marks a parallel state; sub-state blocks `State { … }` are
+  accepted and their transitions are flattened.
+- Event constants are written `Name::event::<e>` (lowered to
+  `Name__event__<e>`); the generated API names are bare, so `.`-method calls and
+  `Name::event::…` work in any namespace. The machine type itself is registered
+  as a type, so `Name m;` works.
+- This is a **first cut**: parallel states and sub-states are flattened (no
+  hierarchical semantics yet), and per-state entry/exit hooks are not generated.
+  The machine's C names are not namespace-mangled (unique machine names are
+  assumed); events/states get their scoping from the `Name__…` prefix.

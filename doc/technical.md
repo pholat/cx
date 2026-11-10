@@ -186,6 +186,30 @@ Details:
 - Attributes are emitted by `emit_attr_leading` (before the return type) and
   `emit_attr_trailing` (after the declarator / struct body). `#[export]` and
   `#[cleanup]` are resolved through the symbol table rather than emitted.
+- **Enums** (`emit_enum_def`, phase 1) become `typedef enum <tag> { … } <tag>;`;
+  the tag is namespace-mangled (via the `CX_NODE_ENUM` symbol) and the
+  enumerators are prefixed with the *bare* enum name (`E__A`), so the
+  `E::A` → `E__A` spelling resolves. `#[str]` adds `E__c_str(E)` (prototype in
+  phase 2, body in phase 4).
+- **State machines** (`emit_fsm_def`/`emit_fsm_protos`/`emit_fsm_funcs`) parse
+  the verbatim `sm` body (`fsm_parse`; line/block comments are stripped) and
+  emit `<M>__State`/`<M>__Event` enums (values `<M>__state__<s>` /
+  `<M>__event__<e>`), the guard/action callback typedefs (`<M>__Guard` =
+  `int (*)(<M>*, <M>__State from, <M>__State to, <M>__Event event)`,
+  `<M>__Action` = `void (*)(…)`), the machine struct (`state`, `void *ctx`, one
+  `guard_<g>` / `action_<a>` field), the `<M>__init` / `__reset` /
+  `__get_state` (returns `<M>__State`) / `__process_event` (takes `<M>__Event`)
+  functions. An explicit `#[str] enum <M>::State;` / `#[str] enum <M>::Event;`
+  marker (`CX_NODE_ENUM_STR`, `emit_fsm_cstr_proto`/`emit_fsm_cstr_def`) is
+  required to get the `c_str` name helpers, so they are opt-in and emitted where
+  the user asked (after the machine declaration, before the functions). The
+  `.cx` file names the enums in Cx syntax (`<M>::State`, `<M>::Event`) via the
+  `type: TYPE_NAME SCOPE IDENT` rule; the parser's `sm_block` action registers
+  only `<M>` in the lexer type set. Sema registers the four API functions as
+  **synthetic function symbols** (kind `CX_NODE_FUNCTION`, bare C names), so
+  `m.process_event(ev)` lowers to `Machine__process_event(&m, ev)`. All FSM C
+  names are bare (not namespace-mangled); `emit_type` emits the machine name
+  as-is.
 - File-scope constructor calls are not supported (emitted as a comment).
 
 ---
@@ -193,7 +217,8 @@ Details:
 ## 6. Semantics & diagnostics
 
 `src/sema/symbols.c` (`cx_sema_build`) walks the tree building a symbol table
-(structs, fields, functions, globals) with namespace-qualified names, and:
+(structs, enums, state machines, fields, functions, globals, traits) with
+namespace-qualified names, and:
 
 - enforces **dtor/ctor name == struct name** and rejects duplicates;
 - `check_calls` rejects a call whose callee is a struct with no constructor;
@@ -238,6 +263,19 @@ converts to 0-based, end-exclusive ranges.
 ## 7. Design decisions & gotchas
 
 Read this before changing the grammar/lexer.
+
+**Conventions.**
+
+- **Prefer Cx syntax in `.cx` / `.hx` files.** Write the Cx spelling, not the C
+  it lowers to: `cast[T](x)` over `(T)x`, `Type::member` / `Type::sub::member`
+  over a mangled `Type__member`, `.`/`->` method calls over the associated
+  `Type__m(&x)` form, a generated `Type::c_str` over a hand-written `switch`,
+  Cx-qualified types (`Type::Sub`) over raw `Type__Sub` names, and so on. The
+  generated C is an implementation detail of the transpiler, not the language.
+- **Prefer traits in `macro_rules!`.** When a macro body depends on an operation
+  an argument type must provide, express it as a trait and attach it with a
+  `requires $x: Trait` clause (checked after expansion) instead of assuming the
+  operation exists.
 
 - **Type-name lexer hack** (`CxTypeSet`, `src/typeset.c`). To disambiguate
   `T *x` from `a * b`, the lexer returns `TYPE_NAME` for identifiers in a known
@@ -318,12 +356,32 @@ Read this before changing the grammar/lexer.
   `ident`/`field`, `tt`, `item` (a balanced group or `;`-terminated run),
   `block` (a `{ … }`), `lit`, `path`, `method`, `ty`, `expr`, `stmt`.
   Repetitions capture an **index path** (`MBind.paths`/`depths`, `MEnv.path`) so
-  nested `$( $( … )* )*` transcribes the right per-iteration binding. `raw { … }`,
-  preprocessor lines and `#[…]` attributes are opaque to the expander. The
-  expander records generated-name origins and invocation sites in a
-  `CxMacroMap` on the TU, **including the defining file** (so `gd` on an
-  invocation of an imported macro lands in the importing module). Consequences
-  and limits are documented in [`macro-rules.md`](./macro-rules.md) §3–§4.
+  nested `$( $( … )* )*` transcribes the right per-iteration binding. A
+  repetition is counted from the metavariable that has captures at its depth, so
+  a body may name an outer metavariable (`$k $slot##_key;`) before the repeated
+  one (`trans_count`). `raw { … }`, preprocessor lines and `#[…]` attributes are
+  opaque to the expander. The expander records generated-name origins and
+  invocation sites in a `CxMacroMap` on the TU, **including the defining file**
+  (so `gd` on an invocation of an imported macro lands in the importing module).
+  Consequences and limits are documented in [`macro-rules.md`](./macro-rules.md)
+  §3–§4.
+- **Enums** register their name in the lexer type set (a mid-rule action, like
+  structs) and emit `typedef enum …`; enumerators are prefixed with the *bare*
+  enum name so the `E::A` → `E__A` spelling resolves in any namespace.
+  **`sm`** blocks are captured verbatim by an `SMCAP` Flex start condition
+  (mirroring `raw`) and parsed by codegen; the machine name is registered as a
+  type. **`cast[T](expr)`** is a parser-only sugar that builds the existing
+  `CX_NODE_EXPR_CAST`. `cast`, `enum` and `sm` are reserved keywords.
+- `Type::member` and `Type::sub::member` in expression position lower to the
+  identifiers `Type__member` / `Type__sub__member`; there is no shift/reduce
+  conflict because `(`/`::` never follow an `expr`. They resolve to enum
+  members, generated container names or the `sm` event constants
+  (`Machine::event::start`); a 3-part form with `(…)` is a call
+  (`Machine::State::c_str(x)`). `Type::Sub` is also a **type** (the
+  `type: TYPE_NAME SCOPE IDENT` rule, e.g. `Machine::State`). To keep the shared
+  `'('` state unambiguous (a qualified name is both a type and an expression),
+  casts/`sizeof` use a separate `cast_type` nonterminal that excludes the
+  qualified form — cast to a qualified type with `cast[T](x)`.
 - Bison blocks are written for **GNU Bison 3.8**; the parser is pure/reentrant
   and the scanner is `reentrant bison-bridge bison-locations`.
 - In the Neovim syntax file, `~` must be escaped (`\~`) — `~` is the

@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 #include "cx/cx.h"
 #include "cx/parser.h"
@@ -55,6 +56,7 @@
 %x RAWCAP
 %x MACROCAP
 %x ATTR
+%x SMCAP
 
 DIGIT   [0-9]
 IDENT   [A-Za-z_][A-Za-z0-9_]*
@@ -110,6 +112,8 @@ IDENT   [A-Za-z_][A-Za-z0-9_]*
 "trait"         { return TRAIT; }
 "implements"    { return IMPLEMENTS; }
 "self"          { return SELF; }
+"cast"          { return CAST; }
+"enum"          { return ENUM; }
 
 "raw"[ \t\r\n]*"{"  {
     CxParseCtx *c = yyget_extra(yyscanner);
@@ -118,6 +122,22 @@ IDENT   [A-Za-z_][A-Za-z0-9_]*
     c->raw_depth = 1;
     cx_buf_clear(&c->raw);
     BEGIN(RAWCAP);
+}
+
+"sm"([ \t\r\n]+{IDENT})?[ \t\r\n]*"{"  {
+    CxParseCtx *c = yyget_extra(yyscanner);
+    int i = 2; /* skip "sm" */
+    while (i < yyleng && (yytext[i] == ' ' || yytext[i] == '\t' ||
+                          yytext[i] == '\r' || yytext[i] == '\n')) i++;
+    int ns = i;
+    while (i < yyleng && (isalnum((unsigned char)yytext[i]) || yytext[i] == '_')) i++;
+    c->macro_name = (i > ns) ? cx_arena_strndup(c->arena, yytext + ns, (size_t)(i - ns))
+                             : "Sm";
+    c->raw_line = yylloc->first_line;
+    c->raw_col = yylloc->first_column;
+    c->raw_depth = 1;
+    cx_buf_clear(&c->raw);
+    BEGIN(SMCAP);
 }
 
 {IDENT}"!"[ \t\r\n]*"("  {
@@ -147,6 +167,23 @@ IDENT   [A-Za-z_][A-Za-z0-9_]*
 <RAWCAP>[^{}\n]+               { cx_buf_puts(&yyget_extra(yyscanner)->raw, yytext); }
 <RAWCAP>\n                     { cx_buf_putc(&yyget_extra(yyscanner)->raw, '\n'); }
 <RAWCAP><<EOF>>                { BEGIN(INITIAL); return 0; }
+
+<SMCAP>"{"                    { CxParseCtx *c = yyget_extra(yyscanner); c->raw_depth++; cx_buf_putc(&c->raw, '{'); }
+<SMCAP>"}"                    {
+    CxParseCtx *c = yyget_extra(yyscanner);
+    if (--c->raw_depth == 0) {
+        BEGIN(INITIAL);
+        yylval->macro.name = c->macro_name;
+        yylval->macro.args = cx_arena_strndup(c->arena, c->raw.data ? c->raw.data : "", c->raw.len);
+        yylloc->first_line = c->raw_line;
+        yylloc->first_column = c->raw_col;
+        return SM;
+    }
+    cx_buf_putc(&c->raw, '}');
+}
+<SMCAP>[^{}\n]+               { cx_buf_puts(&yyget_extra(yyscanner)->raw, yytext); }
+<SMCAP>\n                     { cx_buf_putc(&yyget_extra(yyscanner)->raw, '\n'); }
+<SMCAP><<EOF>>                { BEGIN(INITIAL); return 0; }
 
 <MACROCAP>"("                  { CxParseCtx *c = yyget_extra(yyscanner); c->macro_depth++; cx_buf_putc(&c->macro_args, '('); }
 <MACROCAP>")"                  {

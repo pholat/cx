@@ -1,0 +1,3 @@
+# Build artifacts of the state-machine example.
+example_sm.c
+example_sm.out

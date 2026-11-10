@@ -129,7 +129,10 @@ Consequences:
   supplies the declarations), while an expression-position `;` is preserved.
 - Nested repetitions are supported through a per-capture index path; a
   metavariable bound at a shallower depth is repeated (its single capture is
-  emitted on every iteration).
+  emitted on every iteration). A repetition is **counted** from the metavariable
+  that actually has captures at that depth, so a body may name an *outer*
+  metavariable before the repeated one — e.g. `$($k $slot##_key; …)*` iterates
+  over `$slot` while emitting the same `$k` type each time.
 - Hygiene is not implemented: identifiers introduced by the body are emitted
   verbatim.
 

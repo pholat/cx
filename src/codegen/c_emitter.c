@@ -49,6 +49,15 @@ static CxNode *find_member(const CxNode *s, CxNodeKind kind) {
     return NULL;
 }
 
+/* The first attribute named `name` on `n`, or NULL. */
+static CxNode *find_attr(const CxNode *n, const char *name) {
+    if (!n || !name) return NULL;
+    for (int i = 0; i < n->attrs.len; i++)
+        if (n->attrs.items[i]->name && !strcmp(n->attrs.items[i]->name, name))
+            return n->attrs.items[i];
+    return NULL;
+}
+
 /* Emit a declared type. Struct names are qualified to their mangled C tag so
  * that same-named structs in different namespaces never collide. */
 static void emit_type(Emit *e, const char *type) {
@@ -66,8 +75,14 @@ static void emit_type(Emit *e, const char *type) {
     name[k] = '\0';
 
     CxSymbol *st = cx_sema_find_struct(e->sema, name);
+    CxSymbol *en = st ? NULL : cx_sema_find_enum(e->sema, name);
+    CxSymbol *fs = (st || en) ? NULL : cx_sema_find_fsm(e->sema, name);
     if (st)
         cx_buf_printf(e->out, "struct %s", cx_mangle(e->arena, st->ns, st->name));
+    else if (en)
+        cx_buf_puts(e->out, cx_mangle(e->arena, en->ns, en->name));
+    else if (fs)
+        cx_buf_puts(e->out, fs->name); /* FSM names are emitted bare */
     else
         cx_buf_puts(e->out, name);
 
@@ -485,6 +500,567 @@ static void emit_trait_global_init(Emit *e, CxNode *s, const char *ns) {
         cx_buf_printf(e->out, " .%s = &%s__%s__table,", tr->name, sm, tr->name);
     }
     cx_buf_puts(e->out, " }");
+}
+
+/* ------------------------------------------------------------------ enums */
+
+/* `typedef enum <tag> { <Enum>__A, <Enum>__B = 2 } <tag>;` — enumerators are
+ * prefixed with the *bare* enum name so `Enum::A` (which the parser lowers to
+ * `Enum__A`) resolves regardless of the namespace. */
+static void emit_enum_def(Emit *e, CxNode *n, const char *ns) {
+    char *q = cx_mangle(e->arena, ns, n->name);
+    cx_emit_line(e->out, n->span.first_line, e->file);
+    ind(e);
+    cx_buf_printf(e->out, "typedef enum %s {\n", q);
+    e->indent++;
+    for (int i = 0; i < n->children.len; i++) {
+        CxNode *m = n->children.items[i];
+        ind(e);
+        cx_buf_printf(e->out, "%s__%s", n->name, m->name);
+        if (m->init) {
+            cx_buf_puts(e->out, " = ");
+            emit_expr(e, m->init);
+        }
+        if (i + 1 < n->children.len) cx_buf_putc(e->out, ',');
+        cx_buf_putc(e->out, '\n');
+    }
+    e->indent--;
+    ind(e);
+    cx_buf_printf(e->out, "} %s;\n", q);
+}
+
+/* `#[str] enum E { … }` generates `const char *E__c_str(E v)`, a switch that
+ * returns each enumerator's name with a `""` fallback. */
+static void emit_enum_str_proto(Emit *e, CxNode *n, const char *ns) {
+    if (!find_attr(n, "str")) return;
+    char *q = cx_mangle(e->arena, ns, n->name);
+    ind(e);
+    cx_buf_printf(e->out, "const char *%s__c_str(%s v);\n", n->name, q);
+}
+
+static void emit_enum_str_def(Emit *e, CxNode *n, const char *ns) {
+    if (!find_attr(n, "str")) return;
+    char *q = cx_mangle(e->arena, ns, n->name);
+    cx_emit_line(e->out, n->span.first_line, e->file);
+    ind(e);
+    cx_buf_printf(e->out, "const char *%s__c_str(%s v) {\n", n->name, q);
+    e->indent++;
+    ind(e);
+    cx_buf_puts(e->out, "switch (v) {\n");
+    e->indent++;
+    for (int i = 0; i < n->children.len; i++) {
+        CxNode *m = n->children.items[i];
+        ind(e);
+        cx_buf_printf(e->out, "case %s__%s: return \"%s\";\n", n->name, m->name,
+                      m->name);
+    }
+    ind(e);
+    cx_buf_puts(e->out, "default: return \"\";\n");
+    e->indent--;
+    ind(e);
+    cx_buf_puts(e->out, "}\n");
+    e->indent--;
+    ind(e);
+    cx_buf_puts(e->out, "}\n\n");
+}
+
+/* -------------------------------------------------------- state machines */
+
+#define FSM_MAX 16
+
+typedef struct {
+    const char *src;   /* state name, or "*"/"any"/"current" */
+    const char *dst;
+    const char *event; /* NULL: unconditional */
+    const char *guards[FSM_MAX];
+    int         nguards;
+    const char *actions[FSM_MAX];
+    int         nactions;
+} FsmTrans;
+
+typedef struct {
+    const char **names;
+    int          len;
+    int          cap;
+} FsmNames;
+
+typedef struct {
+    CxArena  *arena;
+    FsmNames  states;
+    FsmNames  events;
+    FsmNames  guards;
+    FsmNames  actions;
+    FsmTrans *trans;
+    int       ntrans;
+    int       tcap;
+} Fsm;
+
+static void fsm_names_add(CxArena *a, FsmNames *v, const char *name) {
+    if (!name || !*name) return;
+    for (int i = 0; i < v->len; i++)
+        if (strcmp(v->names[i], name) == 0) return;
+    if (v->len == v->cap) {
+        int cap = v->cap ? v->cap * 2 : 8;
+        const char **items =
+            (const char **)cx_arena_alloc(a, sizeof(char *) * (size_t)cap);
+        if (!items) return;
+        if (v->names && v->len)
+            memcpy(items, v->names, sizeof(char *) * (size_t)v->len);
+        v->names = items;
+        v->cap = cap;
+    }
+    v->names[v->len++] = cx_arena_strdup(a, name);
+}
+
+static const char *fsm_skip_ws(const char *p) {
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    return p;
+}
+
+/* Read a state/event name: an identifier, or a bracketed pseudo-state
+ * `[*]`/`[any]`/`[current]` (returned as "*"/"any"/"current"). */
+static const char *fsm_read_name(CxArena *a, const char **pp) {
+    const char *p = fsm_skip_ws(*pp);
+    char buf[128];
+    int n = 0;
+    if (*p == '[') {
+        p++;
+        p = fsm_skip_ws(p);
+        while (*p && *p != ']' && n < (int)sizeof buf - 1) buf[n++] = *p++;
+        while (n > 0 && (buf[n - 1] == ' ' || buf[n - 1] == '\t')) n--;
+        buf[n] = '\0';
+        if (*p == ']') p++;
+        *pp = p;
+        if (strcmp(buf, "*") == 0) return "*";
+        if (strcmp(buf, "any") == 0) return "any";
+        if (strcmp(buf, "current") == 0) return "current";
+        return cx_arena_strdup(a, buf);
+    }
+    while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+           (*p >= '0' && *p <= '9') || *p == '_') {
+        if (n < (int)sizeof buf - 1) buf[n++] = *p;
+        p++;
+    }
+    buf[n] = '\0';
+    *pp = p;
+    return cx_arena_strdup(a, buf);
+}
+
+static FsmTrans *fsm_new_trans(CxArena *a, Fsm *f) {
+    if (f->ntrans == f->tcap) {
+        int cap = f->tcap ? f->tcap * 2 : 8;
+        FsmTrans *items =
+            (FsmTrans *)cx_arena_alloc(a, sizeof(FsmTrans) * (size_t)cap);
+        if (!items) return NULL;
+        if (f->trans && f->ntrans)
+            memcpy(items, f->trans, sizeof(FsmTrans) * (size_t)f->ntrans);
+        f->trans = items;
+        f->tcap = cap;
+    }
+    FsmTrans *t = &f->trans[f->ntrans++];
+    memset(t, 0, sizeof *t);
+    return t;
+}
+
+/* Copy `src` with line and block comments replaced by a space, so the
+ * transition scanner never mistakes comment text for a transition. */
+static char *fsm_strip_comments(CxArena *a, const char *src) {
+    CxBuf b;
+    cx_buf_init(&b);
+    for (const char *p = src; *p;) {
+        if (p[0] == '/' && p[1] == '/') { /* line comment */
+            while (*p && *p != '\n') p++;
+            cx_buf_putc(&b, ' ');
+            continue;
+        }
+        if (p[0] == '/' && p[1] == '*') { /* block comment */
+            p += 2;
+            while (*p && !(p[0] == '*' && p[1] == '/')) p++;
+            if (*p) p += 2;
+            cx_buf_putc(&b, ' ');
+            continue;
+        }
+        cx_buf_putc(&b, *p++);
+    }
+    char *r = cx_arena_strdup(a, b.data ? b.data : "");
+    cx_buf_free(&b);
+    return r;
+}
+
+/* Parse the captured `sm` body into `f`. Sub-state blocks (`State { … }`) are
+ * flattened: their transitions are treated as ordinary top-level transitions. */
+static void fsm_parse(CxArena *a, const char *body, Fsm *f) {
+    memset(f, 0, sizeof *f);
+    f->arena = a;
+    const char *p = body ? fsm_strip_comments(a, body) : "";
+    for (;;) {
+        p = fsm_skip_ws(p);
+        if (!*p) break;
+        if (*p == '}') { p++; continue; }
+        if (*p == '|') p++; /* parallel-state marker */
+        p = fsm_skip_ws(p);
+
+        const char *src = fsm_read_name(a, &p);
+        if (!src || !*src) { p++; continue; }
+        p = fsm_skip_ws(p);
+        if (*p == '{') { p++; continue; } /* block header: `State {` */
+        if (!(p[0] == '-' && p[1] == '>')) { p++; continue; }
+        p += 2;
+        const char *dst = fsm_read_name(a, &p);
+        p = fsm_skip_ws(p);
+
+        FsmTrans *t = fsm_new_trans(a, f);
+        if (!t) return;
+        t->src = src;
+        t->dst = dst;
+
+        if (*p == ':') {
+            p++;
+            t->event = fsm_read_name(a, &p);
+            fsm_names_add(a, &f->events, t->event);
+            p = fsm_skip_ws(p);
+        }
+        if (*p == '[') {
+            p++;
+            for (;;) {
+                p = fsm_skip_ws(p);
+                if (*p == ']') { p++; break; }
+                if (!*p) break;
+                const char *g = fsm_read_name(a, &p);
+                if (t->nguards < FSM_MAX) t->guards[t->nguards++] = g;
+                fsm_names_add(a, &f->guards, g);
+                p = fsm_skip_ws(p);
+                if (*p == ',') { p++; continue; }
+                if (*p == ']') { p++; break; }
+            }
+            p = fsm_skip_ws(p);
+        }
+        if (*p == '/') {
+            p++;
+            for (;;) {
+                p = fsm_skip_ws(p);
+                if (!*p) break;
+                const char *ac = fsm_read_name(a, &p);
+                if (!ac || !*ac) break;
+                if (t->nactions < FSM_MAX) t->actions[t->nactions++] = ac;
+                fsm_names_add(a, &f->actions, ac);
+                p = fsm_skip_ws(p);
+                if (*p == ',') { p++; continue; }
+                break;
+            }
+        }
+        if (strcmp(src, "*") != 0 && strcmp(src, "any") != 0 &&
+            strcmp(src, "current") != 0)
+            fsm_names_add(a, &f->states, src);
+        if (strcmp(dst, "*") != 0 && strcmp(dst, "any") != 0 &&
+            strcmp(dst, "current") != 0)
+            fsm_names_add(a, &f->states, dst);
+    }
+}
+
+/* The machine's generated C names are all prefixed with the machine's *bare*
+ * name and use cx-style `__` sub-namespacing: states `<M>__state__<s>`, events
+ * `<M>__event__<e>`, guard/action struct fields `guard_<g>` / `action_<a>` and
+ * the API `<M>__init` etc.  Events are enum members (not assignable); only
+ * guards and actions are assignable callbacks. Guards/actions receive the typed
+ * machine pointer and the event; the *user* context is the `void *ctx` field. */
+static void emit_fsm_def(Emit *e, CxNode *n, const char *ns) {
+    (void)ns; /* generated names are bare, matching the synthetic API symbols */
+    Fsm f;
+    fsm_parse(e->arena, n->type, &f);
+    const char *m = n->name;
+    cx_emit_line(e->out, n->span.first_line, e->file);
+
+    ind(e);
+    cx_buf_printf(e->out, "typedef enum %s__State {\n", m);
+    e->indent++;
+    ind(e);
+    cx_buf_printf(e->out, "%s__state__entry = 0", m);
+    for (int i = 0; i < f.states.len; i++) {
+        cx_buf_puts(e->out, ",\n");
+        ind(e);
+        cx_buf_printf(e->out, "%s__state__%s", m, f.states.names[i]);
+    }
+    cx_buf_putc(e->out, '\n');
+    e->indent--;
+    ind(e);
+    cx_buf_printf(e->out, "} %s__State;\n", m);
+
+    ind(e);
+    cx_buf_printf(e->out, "typedef enum %s__Event {\n", m);
+    e->indent++;
+    if (f.events.len == 0) {
+        ind(e);
+        cx_buf_printf(e->out, "%s__event__none = 0\n", m);
+    }
+    for (int i = 0; i < f.events.len; i++) {
+        ind(e);
+        cx_buf_printf(e->out, "%s__event__%s", m, f.events.names[i]);
+        if (i + 1 < f.events.len) cx_buf_putc(e->out, ',');
+        cx_buf_putc(e->out, '\n');
+    }
+    e->indent--;
+    ind(e);
+    cx_buf_printf(e->out, "} %s__Event;\n", m);
+
+    /* Forward-declare the machine type, then the callback typedefs (which name
+     * it), then the struct itself. A guard/action always receives the typed
+     * machine, the from (exit) state, the to (entry) state and the event
+     * (never bare integers). */
+    ind(e);
+    cx_buf_printf(e->out, "typedef struct %s %s;\n", m, m);
+    ind(e);
+    cx_buf_printf(e->out,
+                  "typedef int (*%s__Guard)(%s *m, %s__State from, "
+                  "%s__State to, %s__Event event);\n",
+                  m, m, m, m, m);
+    ind(e);
+    cx_buf_printf(e->out,
+                  "typedef void (*%s__Action)(%s *m, %s__State from, "
+                  "%s__State to, %s__Event event);\n",
+                  m, m, m, m, m);
+
+    ind(e);
+    cx_buf_printf(e->out, "struct %s {\n", m);
+    e->indent++;
+    ind(e);
+    cx_buf_printf(e->out, "%s__State state;\n", m);
+    ind(e);
+    cx_buf_puts(e->out, "void *ctx; /* user context */\n");
+    for (int i = 0; i < f.guards.len; i++) {
+        ind(e);
+        cx_buf_printf(e->out, "%s__Guard guard_%s;\n", m, f.guards.names[i]);
+    }
+    for (int i = 0; i < f.actions.len; i++) {
+        ind(e);
+        cx_buf_printf(e->out, "%s__Action action_%s;\n", m, f.actions.names[i]);
+    }
+    e->indent--;
+    ind(e);
+    cx_buf_puts(e->out, "};\n\n");
+}
+
+static void emit_fsm_protos(Emit *e, CxNode *n, const char *ns) {
+    (void)ns;
+    const char *m = n->name;
+    ind(e);
+    cx_buf_printf(e->out, "void %s__init(%s *m, void *ctx);\n", m, m);
+    ind(e);
+    cx_buf_printf(e->out, "void %s__reset(%s *m);\n", m, m);
+    ind(e);
+    cx_buf_printf(e->out, "%s__State %s__get_state(%s *m);\n", m, m, m);
+    ind(e);
+    cx_buf_printf(e->out, "void %s__process_event(%s *m, %s__Event event);\n",
+                  m, m, m);
+}
+
+/* Emit the C expression for a transition endpoint state. `any`/`current` mean
+ * "the machine's current state"; `*` is the entry pseudo-state. */
+static void fsm_emit_state_expr(Emit *e, const char *m, const char *st) {
+    if (!st || strcmp(st, "any") == 0 || strcmp(st, "current") == 0)
+        cx_buf_puts(e->out, "m->state");
+    else if (strcmp(st, "*") == 0)
+        cx_buf_printf(e->out, "%s__state__entry", m);
+    else
+        cx_buf_printf(e->out, "%s__state__%s", m, st);
+}
+
+static void fsm_emit_dst(Emit *e, const char *m, const FsmTrans *t) {
+    if (strcmp(t->dst, "current") == 0 || strcmp(t->dst, "any") == 0) return;
+    if (strcmp(t->dst, "*") == 0) {
+        ind(e);
+        cx_buf_printf(e->out, "m->state = %s__state__entry;\n", m);
+        return;
+    }
+    ind(e);
+    cx_buf_printf(e->out, "m->state = %s__state__%s;\n", m, t->dst);
+}
+
+static void fsm_emit_actions(Emit *e, const char *m, const FsmTrans *t) {
+    for (int i = 0; i < t->nactions; i++) {
+        ind(e);
+        cx_buf_printf(e->out, "if (m->action_%s) m->action_%s(m, ",
+                      t->actions[i], t->actions[i]);
+        fsm_emit_state_expr(e, m, t->src); /* from (exit) state */
+        cx_buf_puts(e->out, ", ");
+        fsm_emit_state_expr(e, m, t->dst); /* to (entry) state */
+        cx_buf_puts(e->out, ", event);\n");
+    }
+}
+
+/* Emit the transition `if`-blocks for source state `src`, in definition order
+ * (first matching transition wins; a failed guard chain falls through). */
+static void fsm_emit_transitions(Emit *e, const char *m, const Fsm *f,
+                                 const char *src) {
+    for (int i = 0; i < f->ntrans; i++) {
+        const FsmTrans *t = &f->trans[i];
+        if (strcmp(t->src, src) != 0) continue;
+
+        ind(e);
+        if (t->event)
+            cx_buf_printf(e->out, "if (event == %s__event__%s) {\n", m,
+                          t->event);
+        else
+            cx_buf_puts(e->out, "{\n");
+        e->indent++;
+        if (t->nguards > 0) {
+            ind(e);
+            cx_buf_puts(e->out, "if (");
+            for (int g = 0; g < t->nguards; g++) {
+                if (g) cx_buf_puts(e->out, " && ");
+                cx_buf_printf(e->out, "m->guard_%s && m->guard_%s(m, ",
+                              t->guards[g], t->guards[g]);
+                fsm_emit_state_expr(e, m, t->src); /* from (exit) state */
+                cx_buf_puts(e->out, ", ");
+                fsm_emit_state_expr(e, m, t->dst); /* to (entry) state */
+                cx_buf_puts(e->out, ", event)");
+            }
+            cx_buf_puts(e->out, ") {\n");
+            e->indent++;
+            fsm_emit_actions(e, m, t);
+            fsm_emit_dst(e, m, t);
+            ind(e);
+            cx_buf_puts(e->out, "return;\n");
+            e->indent--;
+            ind(e);
+            cx_buf_puts(e->out, "}\n");
+        } else {
+            fsm_emit_actions(e, m, t);
+            fsm_emit_dst(e, m, t);
+            ind(e);
+            cx_buf_puts(e->out, "return;\n");
+        }
+        e->indent--;
+        ind(e);
+        cx_buf_puts(e->out, "}\n");
+    }
+}
+
+static void emit_fsm_funcs(Emit *e, CxNode *n, const char *ns) {
+    (void)ns;
+    Fsm f;
+    fsm_parse(e->arena, n->type, &f);
+    const char *m = n->name;
+
+    ind(e);
+    cx_buf_printf(e->out, "void %s__init(%s *m, void *ctx) {\n", m, m);
+    e->indent++;
+    ind(e);
+    cx_buf_printf(e->out, "m->state = %s__state__entry;\n", m);
+    ind(e);
+    cx_buf_puts(e->out, "m->ctx = ctx;\n");
+    for (int i = 0; i < f.guards.len; i++) {
+        ind(e);
+        cx_buf_printf(e->out, "m->guard_%s = 0;\n", f.guards.names[i]);
+    }
+    for (int i = 0; i < f.actions.len; i++) {
+        ind(e);
+        cx_buf_printf(e->out, "m->action_%s = 0;\n", f.actions.names[i]);
+    }
+    e->indent--;
+    ind(e);
+    cx_buf_puts(e->out, "}\n\n");
+
+    ind(e);
+    cx_buf_printf(e->out, "void %s__reset(%s *m) {\n", m, m);
+    e->indent++;
+    ind(e);
+    cx_buf_printf(e->out, "m->state = %s__state__entry;\n", m);
+    e->indent--;
+    ind(e);
+    cx_buf_puts(e->out, "}\n\n");
+
+    ind(e);
+    cx_buf_printf(e->out, "%s__State %s__get_state(%s *m) {\n", m, m, m);
+    e->indent++;
+    ind(e);
+    cx_buf_puts(e->out, "return m->state;\n");
+    e->indent--;
+    ind(e);
+    cx_buf_puts(e->out, "}\n\n");
+
+    ind(e);
+    cx_buf_printf(e->out, "void %s__process_event(%s *m, %s__Event event) {\n",
+                  m, m, m);
+    e->indent++;
+    for (int i = 0; i < f.states.len; i++) {
+        ind(e);
+        cx_buf_printf(e->out, "if (m->state == %s__state__%s) {\n", m,
+                      f.states.names[i]);
+        e->indent++;
+        fsm_emit_transitions(e, m, &f, f.states.names[i]);
+        e->indent--;
+        ind(e);
+        cx_buf_puts(e->out, "}\n");
+    }
+    {
+        int entry = 0;
+        for (int i = 0; i < f.ntrans; i++)
+            if (strcmp(f.trans[i].src, "*") == 0) entry = 1;
+        if (entry) {
+            ind(e);
+            cx_buf_printf(e->out, "if (m->state == %s__state__entry) {\n", m);
+            e->indent++;
+            fsm_emit_transitions(e, m, &f, "*");
+            e->indent--;
+            ind(e);
+            cx_buf_puts(e->out, "}\n");
+        }
+    }
+    /* `[any]` transitions run last, as the fallback when nothing else matched. */
+    fsm_emit_transitions(e, m, &f, "any");
+    e->indent--;
+    ind(e);
+    cx_buf_puts(e->out, "}\n\n");
+}
+
+/* `<M>__State__c_str` / `<M>__Event__c_str` — generated on demand by an
+ * explicit `#[str] enum Machine::State;` marker, so the enum-name helpers are
+ * opt-in and emitted where the user asked (after the machine declaration). */
+static void emit_fsm_cstr_proto(Emit *e, CxNode *n) {
+    ind(e);
+    cx_buf_printf(e->out, "const char *%s__%s__c_str(%s__%s v);\n", n->name,
+                  n->type, n->name, n->type);
+}
+
+static void emit_fsm_cstr_def(Emit *e, CxNode *n) {
+    CxSymbol *fs = cx_sema_find_fsm(e->sema, n->name);
+    if (!fs || !fs->decl) return;
+    Fsm f;
+    fsm_parse(e->arena, fs->decl->type, &f);
+    const char *m = n->name;
+    int is_state = n->type && strcmp(n->type, "State") == 0;
+
+    ind(e);
+    cx_buf_printf(e->out, "const char *%s__%s__c_str(%s__%s v) {\n", m, n->type,
+                  m, n->type);
+    e->indent++;
+    ind(e);
+    cx_buf_puts(e->out, "switch (v) {\n");
+    e->indent++;
+    if (is_state) {
+        ind(e);
+        cx_buf_printf(e->out, "case %s__state__entry: return \"entry\";\n", m);
+        for (int i = 0; i < f.states.len; i++) {
+            ind(e);
+            cx_buf_printf(e->out, "case %s__state__%s: return \"%s\";\n", m,
+                          f.states.names[i], f.states.names[i]);
+        }
+    } else {
+        for (int i = 0; i < f.events.len; i++) {
+            ind(e);
+            cx_buf_printf(e->out, "case %s__event__%s: return \"%s\";\n", m,
+                          f.events.names[i], f.events.names[i]);
+        }
+    }
+    ind(e);
+    cx_buf_puts(e->out, "default: return \"\";\n");
+    e->indent--;
+    ind(e);
+    cx_buf_puts(e->out, "}\n");
+    e->indent--;
+    ind(e);
+    cx_buf_puts(e->out, "}\n\n");
 }
 
 /* A constructor call is any call whose callee names a struct that has a ctor. */
@@ -937,6 +1513,10 @@ static void walk(Emit *e, CxNode *node, const char *ns, int phase) {
             cx_buf_puts(e->out, "typedef ");
             emit_decl(e, node);
             cx_buf_puts(e->out, ";\n");
+        } else if (node->kind == CX_NODE_ENUM) {
+            emit_enum_def(e, node, ns);
+        } else if (node->kind == CX_NODE_FSM) {
+            emit_fsm_def(e, node, ns);
         }
         break;
     case 2:
@@ -946,6 +1526,12 @@ static void walk(Emit *e, CxNode *node, const char *ns, int phase) {
             cx_buf_puts(e->out, ";\n");
         } else if (node->kind == CX_NODE_STRUCT) {
             emit_struct_pass(e, node, ns, 2);
+        } else if (node->kind == CX_NODE_ENUM) {
+            emit_enum_str_proto(e, node, ns);
+        } else if (node->kind == CX_NODE_ENUM_STR) {
+            emit_fsm_cstr_proto(e, node);
+        } else if (node->kind == CX_NODE_FSM) {
+            emit_fsm_protos(e, node, ns);
         }
         break;
     case 3:
@@ -962,6 +1548,12 @@ static void walk(Emit *e, CxNode *node, const char *ns, int phase) {
         } else if (node->kind == CX_NODE_VAR_DECL) {
             cx_emit_line(e->out, node->span.first_line, e->file);
             emit_var_decl(e, node, 0);
+        } else if (node->kind == CX_NODE_ENUM) {
+            emit_enum_str_def(e, node, ns);
+        } else if (node->kind == CX_NODE_ENUM_STR) {
+            emit_fsm_cstr_def(e, node);
+        } else if (node->kind == CX_NODE_FSM) {
+            emit_fsm_funcs(e, node, ns);
         }
         break;
     }

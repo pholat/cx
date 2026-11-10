@@ -167,6 +167,9 @@ const char *cx_node_kind_name(CxNodeKind kind) {
     case CX_NODE_IMPL_METHOD:      return "impl_method";
     case CX_NODE_ATTR:             return "attr";
     case CX_NODE_UNPACK:           return "unpack";
+    case CX_NODE_ENUM:             return "enum";
+    case CX_NODE_ENUM_STR:         return "enum_str";
+    case CX_NODE_FSM:              return "fsm";
     case CX_NODE_ERROR:            return "error";
     }
     return "?";

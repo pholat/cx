@@ -1142,7 +1142,12 @@ static int trans_count(MTrans **kids, int n, MEnv *env, const int *path,
                 int idx = b->paths[k][npath];
                 if (idx > mx) mx = idx;
             }
-            return mx + 1;
+            /* A metavariable bound *outside* this repetition (its captures are
+             * shallower than `npath`) does not drive the count — skip it and
+             * look for the variable that does. Only a variable with captures at
+             * this depth gives the iteration count. */
+            if (mx >= 0) return mx + 1;
+            continue;
         } else if (t->kind == T_GROUP || t->kind == T_REP) {
             int c = trans_count(t->kids, t->nkids, env, path, npath);
             if (c >= 0) return c;

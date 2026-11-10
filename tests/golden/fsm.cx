@@ -1,0 +1,91 @@
+// `sm Name { … }` — a state machine. Transitions are
+//     Src -> Dst : Event [Guard, …] / Action, …
+// `[*]` is the entry state, `[any]` a catch-all, `[current]` keeps the current
+// state. Events are enum constants (`Machine::event::start`) and are *not*
+// assignable; guards and actions are callbacks assigned on the machine struct.
+// A guard/action always receives the typed machine, the `from` state, the `to`
+// state and the event (never bare integers); the user context is `m->ctx`.
+// The generated state/event enums are Cx-qualified types (`Machine::State`,
+// `Machine::Event`); `#[str] enum Machine::State;` / `#[str] enum Machine::Event;`
+// opt in to the `c_str` name helpers.
+
+sm Machine {
+    [*] -> playing : start / log_play
+    playing -> done : finish [can_stop] / log_stopped
+    // Runs when the guarded transition above does not.
+    playing -> done : finish / log_wont_stop
+    done -> [*] / log_done
+    [any] -> [current] / log_unexpected
+}
+
+#[str] enum Machine::State;
+#[str] enum Machine::Event;
+
+int can_stop(Machine *m, Machine::State from, Machine::State to,
+             Machine::Event event) {
+    (void)m;
+    (void)from;
+    (void)to;
+    (void)event;
+    return 1;
+}
+
+void log_play(Machine *m, Machine::State from, Machine::State to,
+              Machine::Event event) {
+    (void)m;
+    (void)from;
+    (void)to;
+    (void)event;
+}
+
+void log_stopped(Machine *m, Machine::State from, Machine::State to,
+                 Machine::Event event) {
+    (void)m;
+    (void)from;
+    (void)to;
+    (void)event;
+}
+
+void log_wont_stop(Machine *m, Machine::State from, Machine::State to,
+                   Machine::Event event) {
+    (void)m;
+    (void)from;
+    (void)to;
+    (void)event;
+}
+
+void log_done(Machine *m, Machine::State from, Machine::State to,
+              Machine::Event event) {
+    (void)m;
+    (void)from;
+    (void)to;
+    (void)event;
+}
+
+void log_unexpected(Machine *m, Machine::State from, Machine::State to,
+                    Machine::Event event) {
+    (void)m;
+    (void)from;
+    (void)to;
+    (void)event;
+}
+
+const char *state_name(Machine m) {
+    return Machine::State::c_str(m.get_state());
+}
+
+int run() {
+    Machine m;
+    m.init(0);
+
+    m.guard_can_stop = can_stop;
+    m.action_log_play = log_play;
+    m.action_log_stopped = log_stopped;
+    m.action_log_wont_stop = log_wont_stop;
+    m.action_log_done = log_done;
+    m.action_log_unexpected = log_unexpected;
+
+    m.process_event(Machine::event::start);
+    m.process_event(Machine::event::finish);
+    return m.get_state();
+}

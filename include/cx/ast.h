@@ -68,6 +68,13 @@ typedef enum {
     CX_NODE_ATTR,         /* `#[name(args)]`: name=attr, type=verbatim args */
     CX_NODE_UNPACK,       /* `auto [a, b] = expr;` / `... = s=>[f1, f2];`
                            * children = targets, params = fields, init = source */
+    CX_NODE_ENUM,         /* `enum E { A, B = 2 };`: children are enumerators
+                           * (CX_NODE_EMPTY: name + optional init). */
+    CX_NODE_ENUM_STR,     /* `#[str] enum Machine::State;`: name = machine,
+                           * type = "State"/"Event"; requests the `c_str` helper
+                           * for an `sm` machine's generated enum. */
+    CX_NODE_FSM,          /* `sm Name { … }`: name = machine name,
+                           * type = the verbatim transition body. */
     CX_NODE_ERROR
 } CxNodeKind;
 

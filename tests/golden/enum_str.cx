@@ -1,0 +1,21 @@
+// `#[str]` on an enum generates `<Enum>__c_str`, a switch that returns each
+// enumerator's name with a `""` fallback.
+
+#[str]
+enum Color {
+    Red,
+    Green = 4,
+    Blue,
+};
+
+const char *color_name(Color c) {
+    return Color::c_str(c);
+}
+
+int default_color() {
+    return Color::Green;
+}
+
+int color_index(Color c) {
+    return cast[int](c);
+}

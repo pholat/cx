@@ -1,0 +1,18 @@
+// `cast[T](expr)` — readable sugar for the C cast `(T)expr`.
+
+namespace demo {
+
+    int as_int(double v) {
+        return cast[int](v);
+    }
+
+    char *as_bytes(int *p) {
+        return cast[char *](p);
+    }
+
+    int sizes(int a) {
+        int b = sizeof(int);
+        int c = sizeof a;
+        return b + c;
+    }
+}
