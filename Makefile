@@ -17,8 +17,10 @@ BISON   ?= bison
 SRC     := $(shell find src -name '*.c')
 OBJ     := $(patsubst src/%.c,$(BUILD)/%.o,$(SRC))
 GEN_OBJ := $(BUILD)/parser.o $(BUILD)/lexer.o
+# The front end, without the CLI's `main`, for the fuzz driver.
+FUZZ_OBJ := $(filter-out $(BUILD)/cli/main.o,$(OBJ) $(GEN_OBJ))
 
-.PHONY: all clean test
+.PHONY: all clean test fuzz ci
 
 all: cx
 
@@ -58,6 +60,21 @@ $(BUILD):
 
 test: cx
 	sh tests/run.sh
+
+# Fuzz driver: the front end linked with its own `main`.
+$(BUILD)/fuzz_driver: tests/fuzz/fuzz_driver.c $(FUZZ_OBJ) | $(BUILD)
+	$(CC) $(CFLAGS) $(CPPFLAGS) tests/fuzz/fuzz_driver.c $(FUZZ_OBJ) -o $@
+
+# Short fuzz run over the golden corpus + random inputs.
+fuzz: cx $(BUILD)/fuzz_driver
+	sh tests/fuzz/run.sh
+
+# Everything CI should run: build, golden tests, output compare, fuzz.
+# (Requires `tests/reference-output/`; regenerate with `sh tests/run.sh save`.)
+ci: cx $(BUILD)/fuzz_driver
+	sh tests/run.sh
+	sh tests/run.sh compare
+	sh tests/fuzz/run.sh
 
 clean:
 	rm -rf $(BUILD) cx

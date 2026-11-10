@@ -27,6 +27,7 @@ typedef struct {
     const char          *file;
     int                  indent;
     int                  header;      /* declaration-only (.hx) output */
+    int                  line_map;    /* `#line` before every statement (cx -g) */
     const CxNode        *self_struct; /* set while emitting a destructor body */
 } Emit;
 

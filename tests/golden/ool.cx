@@ -1,0 +1,24 @@
+namespace ool {
+
+    /* The bodies for `ool.hx`'s declarations. This `.cx` is paired with
+     * `ool.hx`, so its struct definition is skipped and the generated C just
+     * `#include`s `ool.h` (declarations + prototypes) and adds the definitions. */
+    struct Counter {
+        int value;
+
+        Counter(int v) { value = v; }
+        ~Counter() { value = 0; }
+    };
+
+    /* `run` is declared in `ool.hx`; `helper` is a `.c`-only helper — it is not
+     * in the header, so the prototype emitted in phase 2 is what lets `run`
+     * call it before its definition. */
+    int run() {
+        Counter c(7);
+        return helper(c.value);
+    }
+
+    int helper(int x) {
+        return x + 1;
+    }
+}

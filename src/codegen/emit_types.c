@@ -115,7 +115,9 @@ static void emit_member_dtor_calls(Emit *e, CxNode *s) {
 
 static void emit_dtor_helper(Emit *e, CxNode *s, const char *ns) {
     CxNode *dtor = find_member(s, CX_NODE_DESTRUCTOR);
-    if (!dtor) return;
+    /* A body-less `~T();` is a declaration only: emit no definition (the paired
+     * `.cx` provides it). */
+    if (!dtor || !dtor->body) return;
 
     char *q = cx_mangle(e->arena, ns, s->name);
     cx_emit_line(e->out, dtor->span.first_line, e->file);
@@ -168,7 +170,7 @@ static void emit_dtor_proto(Emit *e, CxNode *s, const char *ns) {
 
 static void emit_ctor_helper(Emit *e, CxNode *s, const char *ns) {
     CxNode *ctor = find_member(s, CX_NODE_CONSTRUCTOR);
-    if (!ctor) return;
+    if (!ctor || !ctor->body) return; /* declaration only (no body to emit) */
 
     emit_ctor_signature(e, ctor, ns, s, 0); /* ends with ")\n" */
 

@@ -43,7 +43,7 @@ is in **Refinement** below.
 | 3 | **Default method bodies** (`trait X { int f(self) { … } }`). | Traits |
 | 4 | **LSP polish (remaining)**: binding-aware `rename`; on-disk workspace indexing; `semanticTokens`; inlay hints; `codeAction` "implement missing trait method"; `positionEncoding` (UTF-16 columns); workspace symbols; call hierarchy. | LSP |
 | 5 | **Language surface**: the comma operator; `static`/`extern`/`inline` specifiers; array types; **scoped imports**; `defer`. | Language surface |
-| 6 | **Tooling / infrastructure**: a **compile database** (`compile_commands.json`); **fuzzing** `cx_macro_expand` / the parser; `#line`/debug-info polish and a CI target; a `cx new-feature` scaffolder; a shared LSP `query.c` position index; **paired `.hx`/`.cx` follow-ups** (out-of-line ctor/dtor definitions and `.c`-only helper prototypes). | Tooling |
+| 6 | **Tooling / infrastructure**: **landed** (`cx compdb`, `cx new-feature`, `make fuzz`, `make ci`, `cx build -g` statement `#line`, paired out-of-line destructor + `.c`-only helper prototypes; the shared LSP position index is `src/lsp/features/nav.c`). | Tooling |
 | 7 | **Considered extensions (not committed)** — see the section at the end. | Extensions |
 | 8 | **Struct-keyed maps** (user-supplied hash/equal pair) and a real **capacity/growth policy** for the container layer; then a `std` overview. | Containers / stdlib |
 
@@ -89,17 +89,18 @@ is in **Refinement** below.
 
 ### Tooling / infrastructure
 
-- **Compile database** (`compile_commands.json`) emitted alongside generated C,
-  so clangd resolves the transpiled output.
-- **Fuzzing** `cx_macro_expand` / the parser. (Golden-output diffing landed as
-  `sh tests/run.sh save` / `compare`, and the sub-second single-file loop as
-  `tests/run_one.sh`.)
-- `#line`/debug-info polish and a CI target.
-- A `cx new-feature` scaffolder and one shared LSP `query.c` position index.
-- **Paired `.hx`/`.cx` follow-ups**: an out-of-line constructor/destructor
-  definition (so the `.hx` can declare `Counter(int);` / `~Counter();` without a
-  body and the `.cx` provide it), and inter-procedural `.c`-only declaration
-  handling (prototypes for helpers the header does not declare).
+- **Landed 2026-11-10.** Compile database (`cx compdb`), fuzzing (`make fuzz` /
+  `tests/fuzz/`), `#line` polish (`cx build -g`), a CI target (`make ci`), the
+  `cx new-feature` scaffolder, and the paired `.hx`/`.cx` out-of-line destructor
+  + `.c`-only helper prototypes. See [`changelog.md`](./changelog.md) and
+  [`technical.md`](./technical.md) §3/§7.
+- `#line` for declarations that came from an *import* (they map to the importing
+  file today), and a body-less *constructor* declaration (`Counter(int);` — the
+  `(` collides with a function-pointer member; see `technical.md` §7).
+- LSP naming: the shared position index is
+  [`src/lsp/features/nav.c`](../src/lsp/features/nav.c) (`cx_lsp_word_at`,
+  `cx_lsp_node_at`, `cx_lsp_scope_at`, `cx_lsp_dot_at`, …) — the roadmap's
+  `query.c` was a working name; renaming it is cosmetic.
 
 ## Considered extensions (not committed)
 

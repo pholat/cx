@@ -17,9 +17,11 @@ debugging, and editor setup. The language itself is documented in
 
 | Command | Purpose |
 | :--- | :--- |
-| `cx build <file.cx\|file.hx> [-o <out>]` | Transpile one file to C (stdout if `-o` is omitted) |
+| `cx build <file.cx\|file.hx> [-o <out>] [-g]` | Transpile one file to C (stdout if `-o` is omitted; `-g` adds statement-level `#line`) |
 | `cx expand <file.cx>` | Print the source after `macro_rules!` expansion |
 | `cx dump <file.cx>` | Parse and print the AST (debugging) |
+| `cx compdb <dir\|file.c>... [--include DIR]...` | Write a `compile_commands.json` for clangd / C tooling |
+| `cx new-feature <name>` | Scaffold a new `src/features/<name>/` module |
 | `cx lsp` | Run the language server on stdio |
 | `cx --version` | Print the version |
 
@@ -179,6 +181,22 @@ Add the generated C to `.gitignore` (it is a build artifact):
 /build/
 ```
 
+### clangd / editor indexing
+
+Editors see the **generated** C, so give clangd a compile database:
+
+```sh
+mkdir -p build
+cx build src/counter.cx -o build/counter.c
+cx compdb build --include submodules/klib
+```
+
+`cx compdb` takes generated `*.c` files and/or directories (scanned
+recursively) and writes `compile_commands.json` next to the first path — one
+`{directory, file, arguments}` entry per file, with the file's own directory plus
+every `--include DIR` on the include path. Re-run it after adding sources; an
+empty directory yields no entries (nothing is transpiled by `compdb` itself).
+
 ### CMake (alternative)
 
 ```cmake
@@ -232,7 +250,10 @@ Two things make the generated code feel like first-class source:
 
 - **`#line` directives.** The transpiler injects `#line N "file.cx"` before
   declarations, so compiler warnings/errors and GDB backtraces point at your
-  `.cx` file and line — not the generated `.c`.
+  `.cx` file and line — not the generated `.c`. `cx build -g` additionally
+  emits one before **every statement**, so a warning inside a function body
+  points at the exact `.cx` line rather than the enclosing declaration (off by
+  default, so plain output stays declaration-level).
 - **Same diagnostics as the editor.** `cx build` and `cx lsp` share one parser,
   so what the editor flags is exactly what the build flags:
   `file.cx:11:5: error: syntax error, unexpected IDENT, expecting ';'`.
@@ -252,12 +273,15 @@ Integration-relevant limitations (the full list is in
 [`roadmap.md`](./roadmap.md) and [`required-features.md`](./required-features.md)):
 
 - **Structs require a trailing `;`** (`};`), exactly like C/C++.
-- **Postfix method calls are a first cut.** Chained `a.b().c()` and computed
-  receivers are not covered; `Type::func(&x, …)` remains the general spelling.
+- **`.`/`->` method calls resolve local/parameter/global receivers**, including
+  chained (`a.b().c()`) and computed (`make().m()`, `arr[i].m()`) ones; when the
+  receiver's type cannot be inferred the call is emitted as written (so a C
+  function-pointer field keeps working).
 - **Macros cross `import` boundaries**, but hygiene is not implemented.
 - **`cleanup` is GCC/Clang only** (no MSVC).
-- **The LSP is same-file for `documentHighlight` / `references` / `rename`**;
-  cross-file references and a binding-aware rename are pending.
+- **The LSP is lexical**: `documentHighlight` is same-file; `references` /
+  `rename` cover every **open** document. A binding-aware rename and on-disk
+  workspace indexing are pending.
 
 ---
 

@@ -834,3 +834,50 @@ and `sh tests/run.sh compare` stayed byte-identical after every stage.
   expander path fixed; `roadmap.md`'s refactor item marked landed and the
   Tooling backlog refreshed.
 
+### Session 2026-11-10 (roadmap item 6 — tooling / infrastructure)
+
+* **Compile database — `cx compdb <dir|file.c>... [--include DIR]... [--cc CC] [--std STD]`.**
+  Takes generated `*.c` files and/or directories (scanned recursively) and writes
+  `compile_commands.json` next to the first path: one
+  `{directory, file, arguments}` entry per file, with the file's own directory
+  plus every `--include DIR` on the include path. Paths are absolute
+  (`realpath`) and entries are sorted, so the DB is deterministic. The DB covers
+  *generated* sources, so build some first (`./cx build foo.cx -o out/foo.c`); if
+  none are found it writes `[]` and says so on stderr.
+* **`cx new-feature <name>` scaffolder.** Writes
+  `src/features/<name>/<name>_feature.{c,h}` (a `CxFeature` with stub
+  `collect`/`emit` hooks) and prints how to register it in
+  `src/features/registry.c` plus where to add a grammar hook and a test. The name
+  must match `[a-z][a-z0-9_]*`; an existing directory is refused.
+* **Fuzzing.** New `tests/fuzz/`: `fuzz_driver.c` (runs `cx_macro_expand`, or
+  `cx_parse` + `cx_sema_build`, then exits 0) and `run.sh`, which feeds every
+  golden source (seeded corpus) plus N random Cx-ish inputs (default 200, from
+  `/dev/urandom` filtered to Cx characters) with a 10 s timeout each; a crash or
+  hang keeps the input as `fuzz-crash-<mode>.cx`. `make fuzz` builds
+  `build/fuzz_driver` (the front end minus `build/cli/main.o`) and runs it.
+* **CI target.** `make ci` = build + `make test` + `sh tests/run.sh compare` +
+  `sh tests/fuzz/run.sh`. (Requires `tests/reference-output/`.)
+* **`#line` / debug-info polish.** `cx build -g` (`--line-map`) sets a codegen
+  option (`cx_codegen_set_line_map`, `Emit.line_map`) that makes the emitter
+  place a `#line` before **every statement**, so a body's compiler errors and
+  debugger frames map to the exact Cx line. Off by default, so plain output is
+  unchanged.
+* **Paired `.hx`/`.cx` follow-ups.** A destructor may now be body-less
+  (`~Counter();`) — a new `destructor_decl` alternative; the header emits only
+  its prototype and the emitter skips a ctor/dtor *definition* whose body is
+  absent, so the `.cx` provides it. `.c`-only helpers are covered by the phase-2
+  prototypes the `.c` emits for every function. New golden test
+  `tests/golden/ool.hx` + `ool.cx`. **Known limitation:** a body-less
+  *constructor* (`Counter(int);`) is not accepted — after a type name, `(` is
+  ambiguous with a function-pointer member (`T (*fp)(…)`) and LALR(1) resolves
+  it in favour of the declaration — so a header writes `Counter(int v) { }` as the
+  placeholder. Recorded in `technical.md` §7 and on the roadmap.
+* **Tests/docs.** `technical.md` §3 (CLI + test commands), §5 (`-g`) and §7
+  (paired bodies, the constructor caveat) updated; `language.md` §2 documents the
+  body-less `~Type();` declaration and the constructor placeholder;
+  `integration.md` §1/§2/§4 gain `cx compdb` (clangd), `-g`, and refreshed
+  receiver/LSP limitation notes; `roadmap.md` item 6 marked landed with the
+  remaining gaps (`query.c` naming, `#line` for imported declarations).
+  Regenerate the reference (`sh tests/run.sh save`) so `compare` has the two new
+  `ool` entries.
+

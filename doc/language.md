@@ -61,6 +61,14 @@ void Buf__dtor(struct Buf *self);
   declared **inside** the struct; both names must equal the struct's.
 - They lower to `void Type__ctor(struct Type *self, params)` and
   `void Type__dtor(struct Type *self)`.
+- A destructor may be declared **without a body** — `~Type();`. This is the
+  paired `.hx`/`.cx` idiom: the header declares the API (the ctor/dtor
+  prototypes) and the `.cx` provides the bodies (`~Type() { … }`); the emitter
+  never emits a definition for a body-less ctor/dtor. See
+  `tests/golden/ool.hx` (declares `~Counter();`) with `ool.cx` (defines it).
+  A constructor has **no** body-less form — after a type name, `(` is ambiguous
+  with a function-pointer member `T (*fp)(…)` — so a header writes
+  `Counter(int v) { }` as the placeholder; only the `.cx`'s body is emitted.
 - Nested struct definitions are supported:
   `struct Outer { struct Inner { … }; … };`. Nested types are mangled through
   the enclosing path (`Outer::Inner` → `Outer__Inner`) and emitted before the

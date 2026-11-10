@@ -55,6 +55,7 @@ The approach rationale (why a transpiler, why a shared AST) is summarized in
 ```sh
 make            # build ./cx
 make test       # transpile + compile every tests/golden/*.cx
+make ci         # build + tests + output compare + fuzz
 ./cx build file.cx -o file.c
 ```
 

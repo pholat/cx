@@ -115,6 +115,8 @@ Requires `cc`, `flex`, `bison`.
 | `make test` | transpile every `tests/golden/*.cx` and compile the result |
 | `sh tests/run.sh save` | save every golden output to `tests/reference-output/` |
 | `sh tests/run.sh compare` | diff every golden output against the reference |
+| `make fuzz` | fuzz the macro expander + parser (golden corpus + random inputs) |
+| `make ci` | build + `make test` + `compare` + `fuzz` (needs the reference) |
 | `make clean` | remove `build/` and `cx` |
 
 The Makefile regenerates `build/parser.{c,h}` and `build/lexer.c` from the
@@ -148,11 +150,21 @@ source instead.
 
 | Command | Effect |
 | :-- | :-- |
-| `cx build <file.cx\|file.hx> [-o <out>]` | transpile to C (stdout without `-o`) |
+| `cx build <file.cx\|file.hx> [-o <out>] [-g]` | transpile to C (stdout without `-o`); `-g` adds a `#line` before every statement |
 | `cx expand <file.cx>` | print the source after `macro_rules!` expansion |
 | `cx dump <file.cx>` | print the AST |
+| `cx compdb <dir\|file.c>... [--include DIR]... [--cc CC] [--std STD]` | write a `compile_commands.json` for the given generated `*.c` files (dirs are scanned) |
+| `cx new-feature <name>` | scaffold `src/features/<name>/` (a feature module) |
 | `cx lsp` | run the language server on stdio |
 | `cx --version` | print version |
+
+`cx compdb` exists so clangd resolves the transpiled output. It takes generated
+`*.c` files and/or directories (scanned recursively) — an empty result means the
+paths held no `*.c` — and writes a `{directory, file, arguments}` entry per file,
+with the file's own directory plus every `--include` on the include path; the DB
+lands next to the first path. `cx new-feature` writes
+`<name>_feature.{c,h}` (the `collect`/`emit` hooks) and prints how to register
+the feature in `src/features/registry.c`.
 
 ### LSP
 
@@ -201,7 +213,9 @@ Details:
 - In ctor/dtor bodies, a bare identifier that names a field is emitted as
   `self->field`.
 - `#line N "file.cx"` is emitted before declarations so downstream compiler
-  errors and GDB map back to the Cx source.
+  errors and GDB map back to the Cx source. `cx build -g` (`Emit.line_map`)
+  also emits one before every statement, so a body's frames map to the exact
+  Cx line; it is off by default so the plain output stays declaration-level.
 - Destructor helpers have **external linkage** (`void T__dtor(struct T *)`), so
   a generated header can declare them and a consumer TU can link the `.c`.
 - Headers use `cx_emit_h` (phases 0–2) wrapped in an include guard. The vtable
@@ -380,6 +394,17 @@ Read this before changing the grammar/lexer.
   file. The macro pass separately collects `macro_rules!` definitions from
   imported files (recursively, cycle-bounded). A `.cx` is *paired* with a
   sibling `.hx` of the same basename (detected in the CLI, not the parser).
+- **Paired `.hx`/`.cx` out-of-line bodies.** The header declares the API and the
+  `.cx` provides the bodies. A destructor may be written body-less
+  (`~Counter();`); the header emits only its prototype, and the `.cx` defines it
+  (`~Counter() { … }`). More generally the emitter skips a ctor/dtor *definition*
+  whose body is absent. A `.c`-only helper — a function the header does not
+  declare — is covered by the phase-2 prototypes the `.c` emits for *every*
+  function, so it may be called before its definition. **Caveat:** a body-less
+  *constructor* (`Counter(int);`) is not accepted: after a type name, `(` is
+  ambiguous with a function-pointer member `T (*fp)(…)`, and LALR(1) resolves it
+  in favour of the declaration. Write `Counter(int v) { }` in the header as the
+  placeholder; the real body lives in the `.cx` (`tests/golden/ool.{hx,cx}`).
 - **Verbatim capture** (`raw { … }`, `NAME!( … )`) uses two Flex start
   conditions (`RAW`/`MACRO`) that copy balanced `{}`/`()` into a buffer; the text
   is copied into the arena when the token is produced, so it survives LAC

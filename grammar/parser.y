@@ -366,9 +366,14 @@ struct_member:
     | raw_block            /* verbatim member, e.g. a macro-generated type */
     ;
 
+/* A destructor is `~Type() { … }`, or a body-less `~Type();` declaration whose
+ * definition another translation unit provides (the paired `.hx`/`.cx` model: a
+ * header declares it, the `.cx` defines it). */
 destructor_decl:
       '~' TYPE_NAME '(' ')' block
         { $$ = MK(CX_NODE_DESTRUCTOR, (@$)); $$->name = $2; $$->body = $5; }
+    | '~' TYPE_NAME '(' ')' ';'
+        { $$ = MK(CX_NODE_DESTRUCTOR, (@$)); $$->name = $2; }
     ;
 
 /* C++-style constructor: a member named after the struct. The semantic pass

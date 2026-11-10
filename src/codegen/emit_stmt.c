@@ -67,6 +67,9 @@ void emit_var_decl(Emit *e, CxNode *n, int is_local) {
 }
 
 void emit_stmt(Emit *e, CxNode *n) {
+    /* `cx build -g`: keep statement-level debug info accurate. */
+    if (e->line_map && n->span.first_line > 0)
+        cx_emit_line(e->out, n->span.first_line, e->file);
     switch (n->kind) {
     case CX_NODE_VAR_DECL:
         emit_var_decl(e, n, 1);
