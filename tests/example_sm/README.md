@@ -1,18 +1,17 @@
 # Runnable state-machine example
 
-A single-file, runnable example of the Cx **`sm`** (state machine) syntax:
-write the transitions, transpile to portable C, compile and run.
+A split, runnable example of the Cx **`sm`** (state machine) syntax: `example_sm.cx` wires the app, `calls.cx` holds the callbacks, `sm.cx` holds the machine, and the matching `*.hx` files expose the shared declarations. The build writes all generated files into `build/`.
 
 ```text
-example_sm.cx  --cx build-->  example_sm.c  --cc-->  example_sm.out
+example_sm.cx + calls.cx + sm.cx + calls.hx + sm.hx  --cx build-->  build/example_sm.c + build/calls.c + build/sm.c  --cc-->  build/example_sm.out
 ```
 
 ## Build & run
 
 ```sh
-make            # example_sm.cx -> example_sm.c -> example_sm.out
+make            # build the generated headers, C files and build/example_sm.out
 make run        # build then execute
-make c          # print the generated C to stdout
+make c          # build the generated C files only
 ```
 
 `cx` must be built first (`make` in the repository root).
@@ -60,6 +59,9 @@ machine with can_stop() = 0 (fallback action runs):
 
 ## Notes
 
+* `sm.cx` contains the machine implementation. `sm.hx` exposes the matching
+  declarations, and `calls.cx` contains the callbacks. `make` writes the
+  generated headers, C files and executable into `build/`.
 * The `c_str` helpers are opt-in: the `#[str] enum Machine::State;` /
   `#[str] enum Machine::Event;` lines right after the `sm` block request them,
   and codegen emits them there (after the machine, before the functions).

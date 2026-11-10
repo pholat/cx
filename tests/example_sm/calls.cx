@@ -1,0 +1,47 @@
+import "calls.hx";
+#include <stdio.h>
+
+
+int can_stop(Machine *m, Machine::State from, Machine::State to,
+             Machine::Event event) {
+    int *allowed = (int *)m->ctx;
+    printf("    guard can_stop: %s -> %s (%s) -> %d\n",
+           Machine::State::c_str(from), Machine::State::c_str(to),
+           Machine::Event::c_str(event), *allowed);
+    return *allowed;
+}
+
+void log_play(Machine *m, Machine::State from, Machine::State to,
+              Machine::Event event) {
+    printf("    action log_play: %s -> %s (%s)\n",
+           Machine::State::c_str(from), Machine::State::c_str(to),
+           Machine::Event::c_str(event));
+}
+
+void log_stopped(Machine *m, Machine::State from, Machine::State to,
+                 Machine::Event event) {
+    printf("    action log_stopped: %s -> %s (%s)\n",
+           Machine::State::c_str(from), Machine::State::c_str(to),
+           Machine::Event::c_str(event));
+}
+
+void log_wont_stop(Machine *m, Machine::State from, Machine::State to,
+                   Machine::Event event) {
+    printf("    action log_wont_stop: %s -> %s (%s)\n",
+           Machine::State::c_str(from), Machine::State::c_str(to),
+           Machine::Event::c_str(event));
+}
+
+void log_done(Machine *m, Machine::State from, Machine::State to,
+              Machine::Event event) {
+    printf("    action log_done: %s -> %s (%s)\n",
+           Machine::State::c_str(from), Machine::State::c_str(to),
+           Machine::Event::c_str(event));
+}
+
+void log_unexpected(Machine *m, Machine::State from, Machine::State to,
+                    Machine::Event event) {
+    printf("    action log_unexpected: %s -> %s (%s)\n",
+           Machine::State::c_str(from), Machine::State::c_str(to),
+           Machine::Event::c_str(event));
+}

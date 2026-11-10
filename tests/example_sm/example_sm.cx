@@ -1,77 +1,16 @@
-// A runnable `sm` (state machine) example.
+// A runnable `sm` example split across small files.
 //
-//   example_sm.cx  --cx build-->  example_sm.c  --cc-->  example_sm.out
+//   example_sm.cx  --cx build-->  example_sm.c
+//   calls.cx + sm.cx  --cx build-->  calls.c + sm.c
+//   example_sm.c + calls.c + sm.c  --cc-->  example_sm.out
 //
-// The `sm` block transpiles to a small C state machine: a state enum, an event
-// enum, guard/action callback types and the machine struct, plus
-// `init`/`reset`/`get_state`/`process_event`. Events are enum constants
-// (`Machine::event::start`) and are not assignable; guards and actions are
-// callbacks assigned on the struct and trace to stdout with `printf`.
-//
-// A guard/action always receives the typed machine, the `from` state, the `to`
-// state and the event — never bare integers. The user context is `m->ctx`.
-// The generated enums are Cx-qualified types (`Machine::State`,
-// `Machine::Event`); `#[str] enum Machine::State;` /
-// `#[str] enum Machine::Event;` opt in to the `c_str` name helpers, so the
-// trace logs state/event *names*, not numbers.
+// This file wires the machine and holds `main`. The machine lives in `sm.cx`.
+// The callbacks live in `calls.cx`.
 
 #include <stdio.h>
+import "sm.hx";
+import "calls.hx";
 
-sm Machine {
-    [*] -> playing : start / log_play
-    playing -> done : finish [can_stop] / log_stopped
-    // Runs when the guarded transition above does not.
-    playing -> done : finish / log_wont_stop
-    done -> [*] / log_done
-    [any] -> [current] / log_unexpected
-}
-
-#[str] enum Machine::State;
-#[str] enum Machine::Event;
-
-int can_stop(Machine *m, Machine::State from, Machine::State to,
-             Machine::Event event) {
-    int *allowed = (int *)m->ctx;
-    printf("    guard can_stop: %s -> %s (%s) -> %d\n",
-           Machine::State::c_str(from), Machine::State::c_str(to),
-           Machine::Event::c_str(event), *allowed);
-    return *allowed;
-}
-
-void log_play(Machine *m, Machine::State from, Machine::State to,
-              Machine::Event event) {
-    printf("    action log_play: %s -> %s (%s)\n",
-           Machine::State::c_str(from), Machine::State::c_str(to),
-           Machine::Event::c_str(event));
-}
-
-void log_stopped(Machine *m, Machine::State from, Machine::State to,
-                 Machine::Event event) {
-    printf("    action log_stopped: %s -> %s (%s)\n",
-           Machine::State::c_str(from), Machine::State::c_str(to),
-           Machine::Event::c_str(event));
-}
-
-void log_wont_stop(Machine *m, Machine::State from, Machine::State to,
-                   Machine::Event event) {
-    printf("    action log_wont_stop: %s -> %s (%s)\n",
-           Machine::State::c_str(from), Machine::State::c_str(to),
-           Machine::Event::c_str(event));
-}
-
-void log_done(Machine *m, Machine::State from, Machine::State to,
-              Machine::Event event) {
-    printf("    action log_done: %s -> %s (%s)\n",
-           Machine::State::c_str(from), Machine::State::c_str(to),
-           Machine::Event::c_str(event));
-}
-
-void log_unexpected(Machine *m, Machine::State from, Machine::State to,
-                    Machine::Event event) {
-    printf("    action log_unexpected: %s -> %s (%s)\n",
-           Machine::State::c_str(from), Machine::State::c_str(to),
-           Machine::Event::c_str(event));
-}
 
 void wire(Machine *m) {
     m->guard_can_stop = can_stop;

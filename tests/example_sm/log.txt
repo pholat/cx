@@ -1,0 +1,35 @@
+cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter example_sm.c calls.c sm.c -o example_sm.out
+/usr/bin/ld: /tmp/ccQxtd3V.o: in function `run_machine':
+example_sm.c:(.text+0x8e): undefined reference to `Machine__init'
+/usr/bin/ld: example_sm.c:(.text+0xba): undefined reference to `Machine__process_event'
+/usr/bin/ld: example_sm.c:(.text+0xda): undefined reference to `Machine__process_event'
+/usr/bin/ld: example_sm.c:(.text+0x104): undefined reference to `Machine__process_event'
+/usr/bin/ld: example_sm.c:(.text+0x124): undefined reference to `Machine__process_event'
+/usr/bin/ld: example_sm.c:(.text+0x130): undefined reference to `Machine__get_state'
+/usr/bin/ld: example_sm.c:(.text+0x137): undefined reference to `Machine__State__c_str'
+/usr/bin/ld: /tmp/ccHmI9th.o: in function `can_stop':
+calls.c:(.text+0x33): undefined reference to `Machine__Event__c_str'
+/usr/bin/ld: calls.c:(.text+0x40): undefined reference to `Machine__State__c_str'
+/usr/bin/ld: calls.c:(.text+0x4d): undefined reference to `Machine__State__c_str'
+/usr/bin/ld: /tmp/ccHmI9th.o: in function `log_play':
+calls.c:(.text+0xa0): undefined reference to `Machine__Event__c_str'
+/usr/bin/ld: calls.c:(.text+0xad): undefined reference to `Machine__State__c_str'
+/usr/bin/ld: calls.c:(.text+0xba): undefined reference to `Machine__State__c_str'
+/usr/bin/ld: /tmp/ccHmI9th.o: in function `log_stopped':
+calls.c:(.text+0x103): undefined reference to `Machine__Event__c_str'
+/usr/bin/ld: calls.c:(.text+0x110): undefined reference to `Machine__State__c_str'
+/usr/bin/ld: calls.c:(.text+0x11d): undefined reference to `Machine__State__c_str'
+/usr/bin/ld: /tmp/ccHmI9th.o: in function `log_wont_stop':
+calls.c:(.text+0x166): undefined reference to `Machine__Event__c_str'
+/usr/bin/ld: calls.c:(.text+0x173): undefined reference to `Machine__State__c_str'
+/usr/bin/ld: calls.c:(.text+0x180): undefined reference to `Machine__State__c_str'
+/usr/bin/ld: /tmp/ccHmI9th.o: in function `log_done':
+calls.c:(.text+0x1c9): undefined reference to `Machine__Event__c_str'
+/usr/bin/ld: calls.c:(.text+0x1d6): undefined reference to `Machine__State__c_str'
+/usr/bin/ld: calls.c:(.text+0x1e3): undefined reference to `Machine__State__c_str'
+/usr/bin/ld: /tmp/ccHmI9th.o: in function `log_unexpected':
+calls.c:(.text+0x22c): undefined reference to `Machine__Event__c_str'
+/usr/bin/ld: calls.c:(.text+0x239): undefined reference to `Machine__State__c_str'
+/usr/bin/ld: calls.c:(.text+0x246): undefined reference to `Machine__State__c_str'
+collect2: error: ld returned 1 exit status
+make: *** [Makefile:38: example_sm.out] Error 1
