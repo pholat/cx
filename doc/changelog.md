@@ -782,3 +782,55 @@ map module, all covered by golden tests.
 * **Build fix:** the `sm` lexer rule comments were moved out of the Flex rules
   section (Flex rejects multi-line comments there).
 
+### Session 2026-11-10 (codebase refactor: split by feature and by concern)
+
+Structural refactor only — **no language or output change**. The generated C was
+snapshotted first (`sh tests/run.sh save` → `tests/reference-output/`, 64 files)
+and `sh tests/run.sh compare` stayed byte-identical after every stage.
+
+* **Test tooling.** `tests/run.sh` gained `save` / `compare` modes: it transpiles
+  every golden input from the repo root with relative paths and either writes
+  each output to `tests/reference-output/` or `diff`s it against the snapshot,
+  exiting non-zero on a mismatch — a byte-for-byte regression guard (and the
+  golden-output test the roadmap asked for). Paths are relative so the embedded
+  `#line` file names are stable and a single case can be checked by hand:
+  `./cx build tests/golden/hello.cx | diff tests/reference-output/hello.c -`.
+  New `tests/run_one.sh <file>` is the sub-second single-file loop (generates the
+  sibling headers so imports resolve, compiles, and prints the generated C / AST
+  / expansion with `--c` / `--dump` / `--expand`).
+* **Macro split** (`src/macro.c` → `src/macro/`): `macro_lex.c` (tokenizer +
+  `MToken` helpers), `macro_match.c` (pattern parse + matcher +
+  `MEnv`/`MBind`), `macro_transcribe.c` (transcription + `render_tokens`) and
+  `macro_driver.c` (definitions, invocation scanning, import collection,
+  assembly, public API), sharing a private `macro_internal.h`. The matcher and
+  transcriber are now independent and unit-testable.
+* **Sema split** (`src/sema/symbols.c` → `collect.c` + `conform.c` +
+  `receivers.c` + `diagnostics.c`): collection/lookups/`cx_sema_build`,
+  the trait + `requires` checks, `auto` inference + receiver resolution (incl.
+  the LSP receiver lookups) and the attribute/call diagnostics, sharing
+  `BuildCtx` in `sema_internal.h`. The new `cx_sema_receivers_pass` wraps the
+  silent-infer → resolve → reporting-infer trio verbatim, so `cx_sema_build`'s
+  call order is unchanged.
+* **Codegen split** (`src/codegen/c_emitter.c` → driver + `emit_types.c`,
+  `emit_expr.c`, `emit_stmt.c`, `emit_traits.c`): the five-phase `walk` and the
+  public entry points stay in `c_emitter.c`, and the emitters share the `Emit`
+  struct now declared in a new `c_emitter.h`. `walk` tracks whether a node was
+  handled and delegates the rest to the feature registry.
+* **Feature modules** (`src/features/`): a `CxFeature` (`collect` sema hook +
+  `emit` codegen hook) in `feature.h`, with the registry in `registry.c`. Enum,
+  `sm`, `#[str]` and `cast` moved into `enum/`, `fsm/`, `str/`, `cast/`;
+  `collect.c`'s `walk` and `c_emitter.c`'s `walk` dispatch through
+  `cx_feature_collect` / `cx_feature_emit`, and `emit_expr`'s cast case calls
+  `cx_cast_emit`. `symbol_new`/`table_push` are shared via `sema_internal.h`.
+* **Grammar** (`grammar/parser.y`): the `enum` / `sm` / `cast` fragments now
+  call per-feature parser hooks (`enum_parser.h`, `fsm_parser.h`,
+  `cast_parser.h`, pulled in by the prologue), with a new `SPAN(@$)` macro, so
+  the node construction left the grammar. A "Grammar map" banner documents where
+  each feature's productions live; rule order and precedence are unchanged (no
+  new conflicts). Parser-side type-set registration for these features stays a
+  grammar mid-rule; a `CxFeature.register` hook is a follow-up.
+* **Docs:** `technical.md` §2 (layout), §3 (test modes), §5 (codegen files),
+  §6 (sema split) and §7 (feature modules gotcha) updated; `macro-rules.md`'s
+  expander path fixed; `roadmap.md`'s refactor item marked landed and the
+  Tooling backlog refreshed.
+

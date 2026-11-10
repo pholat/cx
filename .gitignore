@@ -1,3 +1,4 @@
 /build/
 /cx
 *.o
+./tests/reference-output/

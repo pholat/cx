@@ -77,15 +77,25 @@ cx/
 │   ├── macro.h                 # macro_rules! expansion (pre-parse pass)
 │   ├── symbols.h codegen.h lsp.h cx.h (umbrella)
 ├── src/
-│   ├── ast.c buf.c diag.c typeset.c macro.c
-│   ├── sema/   symbols.c scope.c raii.c
-│   ├── codegen/ mangle.c line_map.c c_emitter.c
+│   ├── ast.c buf.c diag.c typeset.c
+│   ├── sema/   collect.c conform.c receivers.c diagnostics.c
+│   │           scope.c raii.c sema_internal.h
+│   ├── codegen/ mangle.c line_map.c c_emitter.{c,h}
+│   │           emit_{types,expr,stmt,traits}.c
+│   ├── macro/  macro_lex.c macro_match.c macro_transcribe.c macro_driver.c
+│   │           macro_internal.h
+│   ├── features/ feature.h registry.c            # feature modules
+│   │           enum/{enum_feature.{c,h},enum_parser.h}
+│   │           fsm/{fsm_feature.{c,h},fsm_parser.h}
+│   │           str/{str_feature.{c,h}} cast/{cast_feature.{c,h},cast_parser.h}
 │   ├── lsp/    json.{h,c} lsp_internal.h transport.c documents.c server.c
 │   │           features/{diagnostics,symbols,definition,hover,completion,
 │   │                     signature,occurrences,nav}.c
 │   └── cli/    main.c
 ├── tests/
-│   ├── run.sh                  # transpile + compile every golden input
+│   ├── run.sh                  # transpile + compile (save/compare outputs)
+│   ├── run_one.sh              # single-file inner loop
+│   ├── reference-output/       # saved cx outputs for `run.sh compare`
 │   ├── golden/                 # *.cx, *.hx, *.fail.cx, std_*.hx modules
 │   └── example/                # standalone runnable app
 └── submodules/klib/            # git submodule (header-only C containers)
@@ -103,6 +113,8 @@ Requires `cc`, `flex`, `bison`.
 | :-- | :-- |
 | `make` | build `./cx` |
 | `make test` | transpile every `tests/golden/*.cx` and compile the result |
+| `sh tests/run.sh save` | save every golden output to `tests/reference-output/` |
+| `sh tests/run.sh compare` | diff every golden output against the reference |
 | `make clean` | remove `build/` and `cx` |
 
 The Makefile regenerates `build/parser.{c,h}` and `build/lexer.c` from the
@@ -115,6 +127,22 @@ grammar, and uses `-MMD -MP` so editing `include/cx/*.h` triggers rebuilds.
 3. runs the negative `*.fail.cx` files and requires `cx build` to fail with a
    conformance diagnostic;
 4. compiles every generated `.c` with `-I submodules/klib`.
+
+Two extra modes snapshot `cx`'s output byte-for-byte (used to prove a refactor
+is output-identical):
+
+- `sh tests/run.sh save` — transpile every golden input and write each output to
+  `tests/reference-output/` (mirroring the golden layout).
+- `sh tests/run.sh compare` — re-transpile and `diff` against
+  `tests/reference-output/`; a mismatch prints the unified diff and exits
+  non-zero. Both modes run `cx` from the repo root with relative paths, so the
+  embedded `#line` file names are stable and a single case can be checked by
+  hand: `./cx build tests/golden/hello.cx | diff tests/reference-output/hello.c -`.
+
+`tests/run_one.sh <file.cx|file.hx>` is the sub-second inner loop: it transpiles
+one input (generating the sibling headers first so imports resolve) and compiles
+it; `--c` / `--dump` / `--expand` print the generated C, the AST or the expanded
+source instead.
 
 ### CLI
 
@@ -152,8 +180,11 @@ This document only records the implementation seams:
 
 ## 5. Code generation
 
-`src/codegen/c_emitter.c` emits a translation unit in **five passes** so the
-dependency order is valid C:
+`src/codegen/` emits a translation unit in **five passes** so the dependency
+order is valid C. `c_emitter.c` is the phase walk + the public entry points
+(`cx_emit_c`/`cx_emit_h`); `emit_types.c`, `emit_expr.c`, `emit_stmt.c` and
+`emit_traits.c` hold the core emitters (sharing the `Emit` struct declared in
+`c_emitter.h`), and the feature syntaxes live under `src/features/`:
 
 0. **preamble** — trait vtable types (`struct T__vtable`), verbatim `raw { … }`
    blocks, and C macro invocations;
@@ -186,13 +217,15 @@ Details:
 - Attributes are emitted by `emit_attr_leading` (before the return type) and
   `emit_attr_trailing` (after the declarator / struct body). `#[export]` and
   `#[cleanup]` are resolved through the symbol table rather than emitted.
-- **Enums** (`emit_enum_def`, phase 1) become `typedef enum <tag> { … } <tag>;`;
-  the tag is namespace-mangled (via the `CX_NODE_ENUM` symbol) and the
-  enumerators are prefixed with the *bare* enum name (`E__A`), so the
-  `E::A` → `E__A` spelling resolves. `#[str]` adds `E__c_str(E)` (prototype in
-  phase 2, body in phase 4).
-- **State machines** (`emit_fsm_def`/`emit_fsm_protos`/`emit_fsm_funcs`) parse
-  the verbatim `sm` body (`fsm_parse`; line/block comments are stripped) and
+- **Enums** (`src/features/enum/`, `emit_enum_def`, phase 1) become
+  `typedef enum <tag> { … } <tag>;`; the tag is namespace-mangled (via the
+  `CX_NODE_ENUM` symbol) and the enumerators are prefixed with the *bare* enum
+  name (`E__A`), so the `E::A` → `E__A` spelling resolves. `#[str]`
+  (`src/features/str/`) adds `E__c_str(E)` (prototype in phase 2, body in
+  phase 4).
+- **State machines** (`src/features/fsm/`, `emit_fsm_def`/`emit_fsm_protos`/
+  `emit_fsm_funcs`) parse the verbatim `sm` body (`fsm_parse`; line/block
+  comments are stripped) and
   emit `<M>__State`/`<M>__Event` enums (values `<M>__state__<s>` /
   `<M>__event__<e>`), the guard/action callback typedefs (`<M>__Guard` =
   `int (*)(<M>*, <M>__State from, <M>__State to, <M>__Event event)`,
@@ -204,9 +237,10 @@ Details:
   required to get the `c_str` name helpers, so they are opt-in and emitted where
   the user asked (after the machine declaration, before the functions). The
   `.cx` file names the enums in Cx syntax (`<M>::State`, `<M>::Event`) via the
-  `type: TYPE_NAME SCOPE IDENT` rule; the parser's `sm_block` action registers
-  only `<M>` in the lexer type set. Sema registers the four API functions as
-  **synthetic function symbols** (kind `CX_NODE_FUNCTION`, bare C names), so
+  `type: TYPE_NAME SCOPE IDENT` rule; the parser's `sm_block` hook
+  (`cx_fsm_decl`) registers only `<M>` in the lexer type set. The feature's
+  `collect` hook registers the four API functions as **synthetic function
+  symbols** (kind `CX_NODE_FUNCTION`, bare C names), so
   `m.process_event(ev)` lowers to `Machine__process_event(&m, ev)`. All FSM C
   names are bare (not namespace-mangled); `emit_type` emits the machine name
   as-is.
@@ -216,12 +250,16 @@ Details:
 
 ## 6. Semantics & diagnostics
 
-`src/sema/symbols.c` (`cx_sema_build`) walks the tree building a symbol table
-(structs, enums, state machines, fields, functions, globals, traits) with
-namespace-qualified names, and:
+`src/sema/` walks the tree building a symbol table (structs, enums, state
+machines, fields, functions, globals, traits) with namespace-qualified names.
+`collect.c` owns the collection + lookups and the `cx_sema_build` orchestrator;
+`conform.c` the trait/`requires` checks; `receivers.c` the `auto` inference and
+receiver resolution; `diagnostics.c` the call/attribute checks (sharing
+`BuildCtx` from `sema_internal.h`):
 
 - enforces **dtor/ctor name == struct name** and rejects duplicates;
-- `check_calls` rejects a call whose callee is a struct with no constructor;
+- `check_calls` (diagnostics.c) rejects a call whose callee is a struct with no
+  constructor;
 - `resolve_receivers` **lowers `.`/`->` method calls**: it keeps a
   **block-scoped** environment (parameters + locals, pushed/popped per block)
   and rewrites `recv.method(args)` whose receiver has a known struct type into
@@ -232,14 +270,15 @@ namespace-qualified names, and:
   bodies are walked with `self` bound to the enclosing struct, and struct fields
   are kept out of the local scope. It runs between two `infer_auto` passes (a
   silent one first, a reporting one after);
-- `lower_unpack` (called from `resolve_receivers`) rewrites a `CX_NODE_UNPACK`
-  (`auto [a, b] = expr;` / `auto [a, c] = expr=>[a, c];`) into a block: a
+- `lower_unpack` (receivers.c, called from `resolve_receivers`) rewrites a
+  `CX_NODE_UNPACK` (`auto [a, b] = expr;` / `auto [a, c] = expr=>[a, c];`) into
+  a block: a
   temporary of the source struct plus one typed declaration per target. The
   source type comes from `expr_type` (so locals/params work); positional targets
   take fields in declaration order, `=>[…]` selects by name;
-- `check_macro_requires` verifies **checked `requires`**: for each binding the
-  macro expander recorded on the TU (`CxMacroMap`), the required trait must
-  exist, and then:
+- `check_macro_requires` (conform.c) verifies **checked `requires`**: for each
+  binding the macro expander recorded on the TU (`CxMacroMap`), the required
+  trait must exist, and then:
   - a binding that resolves to a **struct** must have a matching `implements`
     block;
   - a **primitive** binding (`int`, `unsigned int`, `const char`, `float *`, … —
@@ -277,6 +316,16 @@ Read this before changing the grammar/lexer.
   `requires $x: Trait` clause (checked after expansion) instead of assuming the
   operation exists.
 
+- **Feature modules** (`src/features/`). A Cx-introduced syntax that spans the
+  grammar, sema and codegen lives in one `src/features/<name>/` module behind
+  the `collect`/`emit` hooks in `feature.h`. The grammar's feature rules are
+  thin hooks that build the node (`enum_parser.h`, `fsm_parser.h`,
+  `cast_parser.h` — `#include`d by `parser.y`'s `%code`), the `collect` hook adds
+  the feature's symbols, and the `emit` hook emits its code in a codegen phase.
+  Enum, `sm`, `#[str]` and `cast` are registered in `src/features/registry.c`;
+  add a new feature there and give it a directory. (Splitting a feature's code
+  out of the shared tree is what keeps `parser.y`, `collect.c` and the emitters
+  from growing one edit at a time.)
 - **Type-name lexer hack** (`CxTypeSet`, `src/typeset.c`). To disambiguate
   `T *x` from `a * b`, the lexer returns `TYPE_NAME` for identifiers in a known
   set (built-ins + struct names). Struct names are registered by a **mid-rule
@@ -350,7 +399,8 @@ Read this before changing the grammar/lexer.
   and `test` are front-end only; `ctor`/`dtor` are rejected with an error.
   Attributes are accepted before external declarations and struct members, not
   statements.
-- **Macro expansion is a text pass before parsing** (`src/macro.c`). It
+- **Macro expansion is a text pass before parsing** (`src/macro/`:
+  `macro_lex.c`, `macro_match.c`, `macro_transcribe.c`, `macro_driver.c`). It
   tokenises the source, removes `macro_rules!` definitions, and substitutes
   matching invocations; expansion is iterative (max 64 passes). Fragments are
   `ident`/`field`, `tt`, `item` (a balanced group or `;`-terminated run),

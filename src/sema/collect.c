@@ -1,0 +1,259 @@
+/* Cx semantic analysis — symbol collection.
+ *
+ * Walks the AST (and each imported tree) building a namespace-qualified symbol
+ * table, and provides the lookups codegen and the LSP share. The check passes
+ * (`check_calls`, `check_implements`, `check_attrs`, `check_macro_requires`) and
+ * the receiver/inference pass live in the sibling files; `cx_sema_build` is the
+ * orchestrator. */
+#include "cx/symbols.h"
+#include "sema_internal.h"
+#include "../features/feature.h"
+
+#include <stdlib.h>
+#include <string.h>
+
+void table_push(CxSymbolTable *t, CxSymbol *s) {
+    if (t->len == t->cap) {
+        int cap = t->cap ? t->cap * 2 : 16;
+        CxSymbol **items =
+            (CxSymbol **)realloc(t->items, sizeof(CxSymbol *) * (size_t)cap);
+        if (!items) return;
+        t->items = items;
+        t->cap = cap;
+    }
+    t->items[t->len++] = s;
+}
+
+static char *join_ns(CxArena *a, const char *ns, const char *name) {
+    if (!ns || !*ns) return cx_arena_strdup(a, name);
+    return cx_arena_printf(a, "%s::%s", ns, name);
+}
+
+CxSymbol *symbol_new(CxArena *a, CxNode *n, const char *ns,
+                     CxNodeKind kind, const char *file) {
+    CxSymbol *s = (CxSymbol *)cx_arena_alloc(a, sizeof(CxSymbol));
+    if (!s) return NULL;
+    s->name = n->name;
+    s->ns = (ns && *ns) ? cx_arena_strdup(a, ns) : NULL;
+    s->qualified = join_ns(a, ns, n->name);
+    s->type = n->type;
+    s->kind = kind;
+    s->span = n->span;
+    s->file = file;
+    s->decl = n;
+    s->dtor = NULL;
+    s->ctor = NULL;
+    s->export_name = NULL;
+    s->cleanup_fn = NULL;
+    return s;
+}
+
+/* The first attribute named `name` on `n`, or NULL. */
+static CxNode *find_attr(const CxNode *n, const char *name) {
+    if (!n || !name) return NULL;
+    for (int i = 0; i < n->attrs.len; i++)
+        if (n->attrs.items[i]->name && !strcmp(n->attrs.items[i]->name, name))
+            return n->attrs.items[i];
+    return NULL;
+}
+
+/* Strip the surrounding quotes from a string-literal attribute argument. */
+static char *unquote(CxArena *a, char *s) {
+    if (!s) return NULL;
+    size_t n = strlen(s);
+    if (n >= 2 && s[0] == '"' && s[n - 1] == '"')
+        return cx_arena_strndup(a, s + 1, n - 2);
+    return s;
+}
+
+static void walk(BuildCtx *c, CxNode *n, const char *ns, const char *file) {
+    if (!n) return;
+    switch (n->kind) {
+    case CX_NODE_TRANSLATION_UNIT:
+    case CX_NODE_NAMESPACE:
+        for (int i = 0; i < n->children.len; i++) {
+            CxNode *ch = n->children.items[i];
+            if (ch->kind == CX_NODE_NAMESPACE)
+                walk(c, ch, join_ns(c->arena, ns, ch->name), file);
+            else
+                walk(c, ch, ns, file);
+        }
+        break;
+
+    case CX_NODE_STRUCT: {
+        CxSymbol *s = symbol_new(c->arena, n, ns, CX_NODE_STRUCT, file);
+        if (!s) return;
+        table_push(c->table, s);
+        CxNode *cl = find_attr(n, "cleanup"); /* `#[cleanup(fn)]`: RAII fn */
+        if (cl && cl->type) s->cleanup_fn = cl->type;
+        for (int i = 0; i < n->children.len; i++) {
+            CxNode *m = n->children.items[i];
+            if (m->kind == CX_NODE_DESTRUCTOR) {
+                if (m->name && n->name && strcmp(m->name, n->name) != 0) {
+                    /* A destructor must be named after its struct, otherwise the
+                     * generated `cleanup` helper would not belong to the type. */
+                    cx_error(c->diags, m->span,
+                             "destructor name '~%s' does not match struct '%s'",
+                             m->name, n->name);
+                } else if (s->dtor) {
+                    cx_error(c->diags, m->span,
+                             "duplicate destructor for struct '%s'", n->name);
+                } else {
+                    s->dtor = m;
+                }
+            } else if (m->kind == CX_NODE_CONSTRUCTOR) {
+                if (m->name && n->name && strcmp(m->name, n->name) != 0) {
+                    /* C++-style: the constructor is the member named after the
+                     * struct, mirroring the destructor rule. */
+                    cx_error(c->diags, m->span,
+                             "constructor name '%s' does not match struct '%s'",
+                             m->name, n->name);
+                } else if (s->ctor) {
+                    cx_error(c->diags, m->span,
+                             "duplicate constructor for struct '%s'", n->name);
+                } else {
+                    s->ctor = m;
+                }
+            } else if (m->kind == CX_NODE_STRUCT) {
+                /* Nested type: its C tag is <Outer>__<Inner>, so qualify it
+                 * with the containing struct's name. */
+                walk(c, m, join_ns(c->arena, ns, n->name), file);
+            } else if (m->kind == CX_NODE_VAR_DECL) {
+                /* Struct fields are resolved structurally by the emitter; the
+                 * symbol table does not need them. */
+            }
+        }
+        break;
+    }
+
+    case CX_NODE_FUNCTION: {
+        CxSymbol *s = symbol_new(c->arena, n, ns, CX_NODE_FUNCTION, file);
+        table_push(c->table, s);
+        CxNode *exp = find_attr(n, "export"); /* `#[export("c_name")]` */
+        if (exp && exp->type) s->export_name = unquote(c->arena, exp->type);
+        break;
+    }
+
+    case CX_NODE_TRAIT: {
+        /* A trait is a named set of required member signatures; the node's
+         * children are the TRAIT_METHODs. Codegen and the conformance pass
+         * look it up by name. */
+        CxSymbol *s = symbol_new(c->arena, n, ns, CX_NODE_TRAIT, file);
+        table_push(c->table, s);
+        break;
+    }
+
+    case CX_NODE_VAR_DECL: {
+        CxSymbol *s = symbol_new(c->arena, n, ns, CX_NODE_VAR_DECL, file);
+        table_push(c->table, s);
+        break;
+    }
+
+    default:
+        /* Feature syntaxes (enums, `sm`, …) add their own symbols through their
+         * `collect` hooks (see `src/features/`). */
+        cx_feature_collect(c, n, ns, file);
+        break;
+    }
+}
+
+CxSymbolTable *cx_sema_build(CxArena *arena, CxNode *tu, CxDiagList *diags) {
+    CxSymbolTable *table =
+        (CxSymbolTable *)cx_arena_alloc(arena, sizeof(CxSymbolTable));
+    if (!table) return NULL;
+    BuildCtx c = {arena, table, diags};
+    walk(&c, tu, NULL, tu ? tu->file : NULL);
+    for (int i = 0; tu && i < tu->imports.len; i++)
+        walk(&c, tu->imports.items[i], NULL, tu->imports.items[i]->file);
+    /* Resolve `.`/`->` method calls to associated calls, inferring `auto` first
+     * (a silent pass) and again afterwards (a reporting pass), then run the
+     * check passes. */
+    cx_sema_receivers_pass(&c, tu);
+    check_calls(&c, tu);
+    check_implements(&c, tu);
+    check_attrs(&c, tu);
+    check_macro_requires(&c, tu);
+    return table;
+}
+
+CxSymbol *cx_sema_lookup(const CxSymbolTable *t, const char *qualified) {
+    if (!t || !qualified) return NULL;
+    for (int i = 0; i < t->len; i++)
+        if (t->items[i]->qualified && !strcmp(t->items[i]->qualified, qualified))
+            return t->items[i];
+    return NULL;
+}
+
+static CxSymbol *find_by_kind(const CxSymbolTable *t, const char *name,
+                              CxNodeKind kind) {
+    if (!t || !name) return NULL;
+    for (int i = 0; i < t->len; i++)
+        if (t->items[i]->kind == kind && t->items[i]->name &&
+            !strcmp(t->items[i]->name, name))
+            return t->items[i];
+    return NULL;
+}
+
+CxSymbol *cx_sema_find_struct(const CxSymbolTable *t, const char *name) {
+    return find_by_kind(t, name, CX_NODE_STRUCT);
+}
+
+CxSymbol *cx_sema_find_function(const CxSymbolTable *t, const char *name) {
+    return find_by_kind(t, name, CX_NODE_FUNCTION);
+}
+
+CxSymbol *cx_sema_find_trait(const CxSymbolTable *t, const char *name) {
+    return find_by_kind(t, name, CX_NODE_TRAIT);
+}
+
+CxSymbol *cx_sema_find_enum(const CxSymbolTable *t, const char *name) {
+    return find_by_kind(t, name, CX_NODE_ENUM);
+}
+
+CxSymbol *cx_sema_find_fsm(const CxSymbolTable *t, const char *name) {
+    return find_by_kind(t, name, CX_NODE_FSM);
+}
+
+CxNode *cx_sema_find_trait_method(const CxSymbolTable *t, const char *trait,
+                                  const char *method) {
+    CxSymbol *tr = cx_sema_find_trait(t, trait);
+    if (!tr || !tr->decl || !method) return NULL;
+    for (int i = 0; i < tr->decl->children.len; i++) {
+        CxNode *m = tr->decl->children.items[i];
+        if (m->kind == CX_NODE_TRAIT_METHOD && m->name && !strcmp(m->name, method))
+            return m;
+    }
+    return NULL;
+}
+
+CxSymbol *cx_sema_find_symbol(const CxSymbolTable *t, const char *name) {
+    if (!t || !name) return NULL;
+    for (int i = 0; i < t->len; i++)
+        if (t->items[i]->name && !strcmp(t->items[i]->name, name))
+            return t->items[i];
+    return NULL;
+}
+
+/* Strip trailing pointer/array decorations from a type so "File *" -> "File". */
+void type_base(const char *type, char *buf, size_t n) {
+    size_t i = 0;
+    while (type[i] && type[i] != ' ' && type[i] != '*' && type[i] != '[' &&
+           i + 1 < n) {
+        buf[i] = type[i];
+        i++;
+    }
+    buf[i] = '\0';
+}
+
+CxSymbol *cx_sema_dtor_for(const CxSymbolTable *t, const char *type) {
+    if (!type) return NULL;
+    char base[128];
+    type_base(type, base, sizeof base);
+    CxSymbol *s = cx_sema_find_struct(t, base);
+    if (s && (s->dtor || s->cleanup_fn)) return s;
+    return NULL;
+}
+
+int cx_sema_type_has_dtor(const CxSymbolTable *t, const char *type) {
+    return cx_sema_dtor_for(t, type) != NULL;
+}

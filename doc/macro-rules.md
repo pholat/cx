@@ -1,7 +1,7 @@
 # Cx — `macro_rules!` reference
 
 > **Status: implemented core.** The expander is a token-level pre-parse pass in
-> `src/macro.c`; it runs before the Cx parser and feeds it the expanded source.
+> `src/macro/`; it runs before the Cx parser and feeds it the expanded source.
 >
 > Implemented: `raw { … }` / `NAME!( … )` C passthrough; `macro_rules!`
 > definitions and invocation in **item, statement and expression** position;

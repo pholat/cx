@@ -43,7 +43,7 @@ is in **Refinement** below.
 | 3 | **Default method bodies** (`trait X { int f(self) { … } }`). | Traits |
 | 4 | **LSP polish (remaining)**: binding-aware `rename`; on-disk workspace indexing; `semanticTokens`; inlay hints; `codeAction` "implement missing trait method"; `positionEncoding` (UTF-16 columns); workspace symbols; call hierarchy. | LSP |
 | 5 | **Language surface**: the comma operator; `static`/`extern`/`inline` specifiers; array types; **scoped imports**; `defer`. | Language surface |
-| 6 | **Tooling / infrastructure**: a **compile database** (`compile_commands.json`); **golden-output tests** (diff the generated C, not just "does it compile") plus fuzzing; `#line`/debug-info polish and a CI target; **paired `.hx`/`.cx` follow-ups** (out-of-line ctor/dtor definitions and `.c`-only helper prototypes). | Tooling |
+| 6 | **Tooling / infrastructure**: a **compile database** (`compile_commands.json`); **fuzzing** `cx_macro_expand` / the parser; `#line`/debug-info polish and a CI target; a `cx new-feature` scaffolder; a shared LSP `query.c` position index; **paired `.hx`/`.cx` follow-ups** (out-of-line ctor/dtor definitions and `.c`-only helper prototypes). | Tooling |
 | 7 | **Considered extensions (not committed)** — see the section at the end. | Extensions |
 | 8 | **Struct-keyed maps** (user-supplied hash/equal pair) and a real **capacity/growth policy** for the container layer; then a `std` overview. | Containers / stdlib |
 
@@ -91,9 +91,11 @@ is in **Refinement** below.
 
 - **Compile database** (`compile_commands.json`) emitted alongside generated C,
   so clangd resolves the transpiled output.
-- **Golden-output tests** (diff the generated C, not just "does it compile"),
-  plus fuzzing `cx_macro_expand` / the parser.
+- **Fuzzing** `cx_macro_expand` / the parser. (Golden-output diffing landed as
+  `sh tests/run.sh save` / `compare`, and the sub-second single-file loop as
+  `tests/run_one.sh`.)
 - `#line`/debug-info polish and a CI target.
+- A `cx new-feature` scaffolder and one shared LSP `query.c` position index.
 - **Paired `.hx`/`.cx` follow-ups**: an out-of-line constructor/destructor
   definition (so the `.hx` can declare `Counter(int);` / `~Counter();` without a
   body and the `.cx` provide it), and inter-procedural `.c`-only declaration
@@ -122,17 +124,9 @@ is in **Refinement** below.
 - **Derived/blanket implementations** (e.g. auto-`Equatable` for POD structs).
 - **Receiver forms other than `self`** (`&self`, `self_`), which interacts with
   move semantics.
-- Codebase refactor:
-  **Split by feature and by concern.** Today one feature edits four big files (`c_emitter.c` ~1.7k lines, `macro.c` ~2k, `symbols.c` ~1.2k, plus grammar/LSP), so diffs and compiles stay large and regressions are easy.
-  
-  1. **Feature modules.** Give each new syntax its own `src/features/<name>/` with a parser hook, sema pass and emitter behind a small `feature.h` (`register/collect/emit`). FSM, enums, `#[str]`, `cast` each become ~100–300 self-contained lines instead of edits spread across the tree.
-  2. **Split `c_emitter.c`** into `emit_types`, `emit_expr`, `emit_stmt`, `emit_traits`, `emit_enum`, `emit_fsm` around a shared `Emit` struct in `c_emitter.h`; turn the five-phase `walk` into a registry of per-node emitters.
-  3. **Split `symbols.c`** into `collect.c`, `conform.c` (traits/`requires`), `receivers.c` (inference + method lowering), `diagnostics.c`.
-  4. **Split `macro.c`** into `macro_lex.c`, `macro_match.c`, `macro_transcribe.c`, `macro_driver.c` — the matcher and transcriber are independent and unit-testable.
-  5. **Grammar.** Group productions per feature, or move `sm`/`enum`/`cast` fragments into `%code` includes so `parser.y` stops growing monotonically.
-  6. **Tooling.** `tests/run_one.sh <file>` for a sub-second single-test loop, a `cx new-feature` scaffolder, and one shared LSP `query.c` position index.
-  
-Net: smaller diffs, faster incremental builds, parallel work, fewer cross-layer regressions.
+- **Codebase refactor** — landed 2026-11-10 (split by feature and by concern:
+  `src/features/`, the `c_emitter`/`symbols`/`macro` splits, per-feature grammar
+  hooks, `tests/run_one.sh`). See [`changelog.md`](./changelog.md).
 
 
 ### Landed extensions — remaining follow-ups

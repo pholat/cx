@@ -15,6 +15,13 @@
  * us declare yylex with the exact signature the parser calls. */
 #include "parser.h"
 
+/* Feature parser hooks. Each feature's grammar fragments delegate their node
+ * construction to the matching module under `src/features/` (see those files);
+ * the resolution is relative to the generated parser (`build/parser.c`). */
+#include "../src/features/enum/enum_parser.h"
+#include "../src/features/fsm/fsm_parser.h"
+#include "../src/features/cast/cast_parser.h"
+
 int yylex(YYSTYPE *yylval, YYLTYPE *yylloc, void *scanner);
 void yyerror(YYLTYPE *locp, CxParseCtx *ctx, void *scanner, const char *msg);
 
@@ -31,6 +38,12 @@ void yyerror(YYLTYPE *locp, CxParseCtx *ctx, void *scanner, const char *msg);
 #define SETSPAN(node, loc)                                                   \
     ((node)->span = (CxSpan){(loc).first_line, (loc).first_column,           \
                              (loc).last_line, (loc).last_column})
+
+/* The current rule's span as a standalone `CxSpan` value, passed to the feature
+ * parser hooks (Bison rewrites `(@$)` to the rule's YYLTYPE). */
+#define SPAN(loc)                                                            \
+    ((CxSpan){(loc).first_line, (loc).first_column, (loc).last_line,         \
+              (loc).last_column})
 %}
 
 %define api.pure full
@@ -104,6 +117,17 @@ void yyerror(YYLTYPE *locp, CxParseCtx *ctx, void *scanner, const char *msg);
 
 %%
 
+/* Grammar map. Core C-like syntax is grouped below in dependency order; the Cx
+ * feature syntaxes are grouped by feature and delegate their node construction
+ * to the feature modules under `src/features/`:
+ *
+ *   enums       `enum_decl`, `enum_members*`, `enum_member*`, `enum_str_decl`
+ *   state mach. `sm_block`
+ *   cast        the `(cast_type)expr` and `cast[T](expr)` expression rules
+ *   traits      `trait_decl`, `implements_block` (see `generics.md`)
+ *   macro_rules! is a pre-parse text pass, not a grammar rule.
+ */
+
 translation_unit:
       %empty
         { $$ = MK(CX_NODE_TRANSLATION_UNIT, (@$)); ctx->result = $$; }
@@ -169,7 +193,7 @@ enum_decl:
       ENUM IDENT
         { cx_typeset_add(&ctx->types, $2); }
       '{' enum_members '}' ';'
-        { $$ = MK(CX_NODE_ENUM, (@$)); $$->name = $2; $$->children = $5; }
+        { $$ = cx_enum_decl(ctx, $2, $5, SPAN(@$)); }
     ;
 
 enum_members:
@@ -200,19 +224,18 @@ enum_member:
  * emits the `<M>__State__c_str` / `<M>__Event__c_str` helpers at this point. */
 enum_str_decl:
       ENUM TYPE_NAME SCOPE IDENT ';'
-        { $$ = MK(CX_NODE_ENUM_STR, (@$)); $$->name = $2; $$->type = $4; }
+        { $$ = cx_enum_str_decl(ctx, $2, $4, SPAN(@$)); }
     ;
 
 /* --------------------------------------------------------------- state machine */
 
 /* `sm Name { … }`: the lexer captures the machine name and the verbatim
  * transition body; codegen expands it into enums, a struct and the
- * `init`/`process_event`/`reset`/`get_state` functions. The name is registered
- * as a type (mid-rule) so `Name m;` is a valid declaration. */
+ * `init`/`process_event`/`reset`/`get_state` functions. `cx_fsm_decl` registers
+ * the name as a type so `Name m;` is a valid declaration. */
 sm_block:
       SM semi_opt
-        { cx_typeset_add(&ctx->types, $1.name);
-          $$ = MK(CX_NODE_FSM, (@$)); $$->name = $1.name; $$->type = $1.args; }
+        { $$ = cx_fsm_decl(ctx, $1.name, $1.args, SPAN(@$)); }
     ;
 
 /* --------------------------------------------------------------------- traits */
@@ -633,10 +656,10 @@ expr:
     | expr '[' expr ']'
         { $$ = MK(CX_NODE_EXPR_INDEX, (@$)); $$->lhs = $1; $$->rhs = $3; }
     | '(' cast_type ')' expr %prec UDEREF
-        { $$ = MK(CX_NODE_EXPR_CAST, (@$)); $$->type = $2; $$->lhs = $4; }
+        { $$ = cx_cast_expr(ctx, $2, $4, SPAN(@$)); }
     /* `cast[T](expr)` — readable sugar for the C cast `(T)expr`. */
     | CAST '[' type ']' '(' expr ')'
-        { $$ = MK(CX_NODE_EXPR_CAST, (@$)); $$->type = $3; $$->lhs = $6; }
+        { $$ = cx_cast_expr(ctx, $3, $6, SPAN(@$)); }
     | SIZEOF '(' cast_type ')' %prec SIZEOF
         { $$ = MK(CX_NODE_EXPR_SIZEOF, (@$)); $$->type = $3; }
     | SIZEOF expr
