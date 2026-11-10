@@ -115,7 +115,59 @@ is in **Refinement** below.
 - **FSM syntax** — `StateA -> StateB : Event [Guard] / Action`, generating:
   1. an enum with states; 2. an enum with events; 3. an SM struct with guard
   function pointers, action function pointers and a context pointer; 4. the SM
-  struct providing `process_event`, `reset`, `get_state`.
+  struct providing `process_event`, `reset`, `get_state`, `init`.
+  The sm accepts `[*]` as entry state.
+  The FSM has to support:
+  - events, guards, actions, parralel states and sub-states.
+  - parallel states will be defined with '|' before the state line, therefore line:
+    ```
+    | StateA -> StateB: Action1
+    | StateD -> StateG: Action2
+    ```
+    means two parallel states.
+    Sub-states can be defined with:
+    ```
+    StateA { 
+        StateB->StateC: Action1 
+        StateC->StateB: Action2
+    }
+    ```
+  - state machine will be detected similar to raw code block. it will start with ` sm { `
+  - state machine will be affedted by `namespace` - therefore a sm created in namespace
+    will have all it's elements affected with namespace.
+  - multiple guards can be passed via coma, result of coma separated guards is a
+    result of `guard1(...) && guard2(...) && ...` the if any guard in the chain fails
+    then next guard is not called ( which is typical && c behaviour )
+  - multiple actions can be passed coma separated
+  - the sm follows first element in transmission capture table rule
+  - comments can be added with `//`
+  - there is a set of non named state handlings:
+    - `[*]` default entry state
+    - `[any]` any entry state
+    - `[current]` current state captured "on the left of `->`
+    With that the user can:
+    - specify entry state with `[*]` 
+    - create a handling for unexpected events i.e. `[any] -> [current] / log_unexpected` 
+      at the end of sm definition will call log_unexpected if nothing else matched and
+      consumed the event
+  - guads and actions are given context with:
+    - entry event
+    - exit event
+    - user context registered
+  - events and guards are callbacks that need to be registered - if not registered
+    these are null and for guards it results in `false`, while for actions it results
+    in lack of call to the action
+  - complete sm example
+    ```
+    namespace test{
+      [*] -> playing : start / log_play, play
+      playing -> done : finish [can_stop] / log_stopped, stop
+      // This transmission will be done if previous wasn't executed
+      playing -> done : finish / log_wont_stop
+      Done -> [*] / log_done
+      [any] -> [current] / log_unexpected
+    }
+    ```
 - **`#[str]`** — automatically create a `c_str` function for an enum that
   returns a static string per element via a `switch` (and `""` as fallback).
 - move semantics for real RAAI - but I've no idea how to make it plain c transpilable
